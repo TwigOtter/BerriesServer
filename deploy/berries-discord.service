@@ -1,0 +1,14 @@
+[Unit]
+Description=Berries Discord Bot
+After=network.target
+
+[Service]
+User=berries
+WorkingDirectory=/opt/berries
+ExecStart=/opt/berries/venv/bin/python -m discord_bot.main
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/opt/berries/.env
+
+[Install]
+WantedBy=multi-user.target

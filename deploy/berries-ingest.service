@@ -1,0 +1,14 @@
+[Unit]
+Description=Berries Ingest API
+After=network.target
+
+[Service]
+User=berries
+WorkingDirectory=/opt/berries
+ExecStart=/opt/berries/venv/bin/uvicorn ingest_api.main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/opt/berries/.env
+
+[Install]
+WantedBy=multi-user.target

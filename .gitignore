@@ -1,0 +1,27 @@
+# ── Secrets ────────────────────────────────────────────────────────────────
+.env
+
+# ── Runtime data (generated, not source) ──────────────────────────────────
+data/transcripts/*.jsonl
+data/chromadb/
+data/stream_utils.db
+logs/
+
+# ── Python ─────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── OS cruft ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db

@@ -1,0 +1,14 @@
+[Unit]
+Description=Berries Twitch Bot
+After=network.target berries-ingest.service
+
+[Service]
+User=berries
+WorkingDirectory=/opt/berries
+ExecStart=/opt/berries/venv/bin/uvicorn berries_bot.main:app --host 127.0.0.1 --port 8001
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/opt/berries/.env
+
+[Install]
+WantedBy=multi-user.target

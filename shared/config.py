@@ -1,0 +1,62 @@
+"""
+shared/config.py
+
+Loads configuration from environment variables and/or a .env file.
+All services import from here — never hardcode secrets or paths.
+"""
+
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ── Paths ──────────────────────────────────────────────────────────────────
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = BASE_DIR / "data"
+TRANSCRIPTS_DIR = DATA_DIR / "transcripts"
+CHROMADB_DIR = DATA_DIR / "chromadb"
+LOGS_DIR = BASE_DIR / "logs"
+PERSONALITY_FILE = BASE_DIR / "berries_bot" / "personality.txt"
+
+# ── ingest_api ─────────────────────────────────────────────────────────────
+INGEST_HOST = os.getenv("INGEST_HOST", "0.0.0.0")
+INGEST_PORT = int(os.getenv("INGEST_PORT", "8000"))
+INGEST_SECRET = os.getenv("INGEST_SECRET", "")       # shared secret header from Streamer.bot
+
+# ── Chunking / buffer ──────────────────────────────────────────────────────
+CHUNK_TOKEN_LIMIT = int(os.getenv("CHUNK_TOKEN_LIMIT", "480"))   # flush at ~480 tokens
+CHUNK_TIMEOUT_SEC = int(os.getenv("CHUNK_TIMEOUT_SEC", "300"))   # flush after 5 min idle
+CHUNK_OVERLAP_SEC = int(os.getenv("CHUNK_OVERLAP_SEC", "30"))    # keep last 30s on flush
+
+# ── ChromaDB ───────────────────────────────────────────────────────────────
+CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "stream_transcripts")
+CHROMA_N_RESULTS = int(os.getenv("CHROMA_N_RESULTS", "4"))       # chunks to retrieve per query
+
+# ── Embedding model ────────────────────────────────────────────────────────
+# Uses sentence-transformers locally — no data leaves the box.
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+
+# ── LLM backend ────────────────────────────────────────────────────────────
+# "anthropic" for Anthropic API, "ollama" for local Ollama instance.
+LLM_BACKEND = os.getenv("LLM_BACKEND", "anthropic")
+
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
+
+# ── Discord ────────────────────────────────────────────────────────────────
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
+DISCORD_BERRIES_CHANNEL_IDS: list[int] = [
+    int(x) for x in os.getenv("DISCORD_BERRIES_CHANNEL_IDS", "").split(",")
+    if x.strip()
+]
+
+# ── Twitch / Streamer.bot ──────────────────────────────────────────────────
+STREAMERBOT_CALLBACK_URL = os.getenv("STREAMERBOT_CALLBACK_URL", "http://127.0.0.1:7474")  # URL to POST responses back
+TWITCH_CHANNEL = os.getenv("TWITCH_CHANNEL", "twigotter")
+
+# ── stream_utils ───────────────────────────────────────────────────────────
+SQLITE_DB_PATH = DATA_DIR / "stream_utils.db"
