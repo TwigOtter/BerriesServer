@@ -139,12 +139,14 @@ All services share this on-disk data. **ChromaDB and SQLite are derived; `.jsonl
 {
   "chunk_id": "2025-03-15T21:34:00_001",
   "stream_date": "2025-03-15",
+  "stream_title": "Some title",
+  "stream_category": "Some Game:",
   "start_time": "2025-03-15T21:32:00Z",
   "end_time": "2025-03-15T21:34:00Z",
   "flush_reason": "token_limit",
-  "text": "[Twig]: So I just hit a really clean hyzer on hole 7...\n[chat]: PogChamp PogChamp\n[StreamerSpeech]: And then I missed the putt completely lmao",
+  "text": "[TwigOtter]: So I just hit a really clean hyzer on hole 7...\n[chatMember]: PogChamp PogChamp\n[TwigOtter]: And then I missed the putt completely lmao\n",
   "token_count": 487,
-  "speaker_summary": ["Twig", "chat"]
+  "speaker_summary": ["Twig", "chatMember"]
 }
 ```
 
@@ -248,7 +250,28 @@ Services: `berries-ingest.service`, `berries-bot.service`, `berries-discord.serv
 ## Open Questions / Future Decisions
 
 - **Embedding model:** `sentence-transformers` local model (free, slightly more setup).
-- **Berries trigger logic:** What determines when Berries should respond? Keyword mention, random interval, every N messages? Define in config.
+- **Berries trigger logic:** Streamer.bot owns the "should Berries respond?" decision — handles redeems, substring checks, and subscriber gating. Sends `"respond": true` in the request body when a response is wanted.
 - **Streamer.bot → ingest_api auth:** Consider a simple shared secret header so random requests can't hit your endpoint.
 - **ChromaDB rebuild script:** Worth writing a small utility that reconstructs ChromaDB from the `.jsonl` files — a one-time investment that makes the whole system recoverable.
 - **Twitch predictions:** Will need OAuth token with `channel:manage:predictions` scope when you get to this.
+
+---
+
+## Planned Features
+
+These are deliberately deferred to keep the current build focused. All have placeholder TODOs in the code.
+
+### Memory layer (ChromaDB)
+Wire `_generate_response()` in `ingest_api/main.py` to query ChromaDB for semantically relevant past context before calling the LLM. Also feed recent `deque` chunks as short-term memory. This is what gives Berries the ability to reference things from past streams.
+
+### Per-user context (SQLite)
+Store a record per chatter: subscriber tier, known nicknames/aliases, gift sub count, mod status, first follow date. Inject relevant fields into the system prompt when a known user triggers a response — so Berries can say "oh, you're one of the long-time subs" or use a nickname organically.
+
+### TTS routing
+When `TTS: true` is sent in the request, route Berries' response to Streamer.bot's SpeakerBot integration rather than (or in addition to) posting to chat. The `TTS` flag already flows through the full pipeline — just needs the Streamer.bot action wired on the other end.
+
+### `log: false` flag
+When Streamer.bot sends `"log": false` (e.g. for the StreamDeck organic conversation button), skip writing the exchange to the `.jsonl` transcript and ChromaDB. Lets Twig have semi-private back-and-forth with Berries without polluting the memory store.
+
+### StreamDeck organic conversation
+A StreamDeck button sends `{"text": "Please respond to the recent conversation", "respond": true, "TTS": true, "log": false}` — Berries reads the recent context from the deque and responds as if joining the conversation naturally, with voice.

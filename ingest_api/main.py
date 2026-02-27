@@ -25,6 +25,7 @@ from shared.config import (
     CHUNK_TIMEOUT_SEC,
     CHUNK_TOKEN_LIMIT,
     INGEST_SECRET,
+    PERSONALITY_FILE,
     STREAMERBOT_CALLBACK_URL,
     TRANSCRIPTS_DIR,
 )
@@ -231,22 +232,54 @@ async def health() -> dict:
     }
 
 
-# ── MVP: Berries mention trigger ───────────────────────────────────────────
+# ── Berries response pipeline ──────────────────────────────────────────────
 
-async def _post_to_streamerbot(message: str) -> None:
-    """
-    POST a chat message to Streamer.bot so it gets sent to Twitch chat.
+def _load_personality() -> str:
+    """Load Berries' system prompt from berries_bot/personality.txt."""
+    if PERSONALITY_FILE.exists():
+        return PERSONALITY_FILE.read_text(encoding="utf-8").strip()
+    print("[ingest_api] WARNING: personality.txt not found, using fallback prompt.")
+    return "You are Berries, a spooky and playful forest demon on a Twitch stream. Keep responses short and in character."
 
-    Streamer.bot should have an HTTP listener action on port 7474 configured
-    to read %request.body.message% and send it as a chat message.
-    Adjust the path/payload to match your Streamer.bot action setup.
+
+async def _generate_response(text: str) -> str:
     """
-    payload = {"message": message}
+    Build context and call the LLM to generate Berries' response.
+
+    TODO: Query ChromaDB for semantically relevant past context before calling LLM.
+    TODO: Include recent_chunks deque content for short-term memory.
+    TODO: Pull user metadata from SQLite (subscriber tier, known nicknames, etc.)
+    """
+    from shared.llm_client import get_completion
+
+    system_prompt = _load_personality()
+
+    # TODO: append ChromaDB context block here once memory layer is wired up
+    # context = _get_chroma_context(text)
+    # if context:
+    #     system_prompt += f"\n\n{context}"
+
+    return await get_completion(system_prompt=system_prompt, user_message=text)
+
+
+async def _post_to_streamerbot(message: str, post_to_chat: bool = True, tts: bool = False) -> None:
+    """
+    POST Berries' response back to Streamer.bot.
+    Streamer.bot reads %request.body.message%, %request.body.postToChat%, %request.body.TTS%.
+
+    TODO: Route TTS responses to SpeakerBot via a separate Streamer.bot action
+          once TTS pipeline is configured.
+    """
+    payload = {
+        "message": message,
+        "postToChat": post_to_chat,
+        "TTS": tts,
+    }
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(STREAMERBOT_CALLBACK_URL, json=payload, timeout=5.0)
             resp.raise_for_status()
-        print(f"[ingest_api] Posted to Streamer.bot: {message!r}")
+        print(f"[ingest_api] Posted to Streamer.bot: {message!r} (TTS={tts})")
     except Exception as e:
         print(f"[ingest_api] Failed to reach Streamer.bot at {STREAMERBOT_CALLBACK_URL}: {e}")
 
@@ -257,25 +290,50 @@ async def receive_mention(
     x_secret: str | None = Header(default=None),
 ) -> dict:
     """
-    MVP endpoint: receive a chat message from Streamer.bot, and if it
-    contains ':3', post ':3' back to Streamer.bot for Twitch chat.
+    Receive a response request from Streamer.bot, generate a Berries response
+    via LLM, and post it back.
 
     Expected body:
-        {"text": "hey @BerriesTheDemon :3 lol"}
+        {
+            "text": "[SomeUsername] Hey Berries, what's Twig's favorite game?",
+            "respond": true,
+            "TTS": false,
+            "log": true
+        }
 
-    Test with curl:
-        curl -X POST http://localhost:8000/event/mention \\
-             -H "Content-Type: application/json" \\
-             -d '{"text": "hello @BerriesTheDemon :3"}'
+    Response:
+        {
+            "message": "Twig's favorite is Ocarina of Time obviously >:3",
+            "postToChat": true,
+            "TTS": false
+        }
+
+    Test with:
+        Invoke-RestMethod -Uri "http://localhost:8000/event/mention" -Method POST `
+            -ContentType "application/json" `
+            -Body '{"text": "[ChatUser] hey Berries, what do you think about mushrooms?", "respond": true, "TTS": false}'
+
+    TODO: when log=false, skip writing text to transcript and ChromaDB.
+    TODO: per-user context from SQLite (subscriber tier, nicknames, follow date, gift subs, mod status).
     """
     _auth_check(x_secret)
     body = await request.json()
+
     text = body.get("text", "")
+    should_respond = body.get("respond", True)
+    tts = body.get("TTS", False)
+    # log = body.get("log", True)  # TODO: use this to suppress transcript writes
 
-    print(f"[ingest_api] /event/mention received: {text!r}")
+    print(f"[ingest_api] /event/mention — text={text!r} respond={should_respond} TTS={tts}")
 
-    if ":3" in text:
-        await _post_to_streamerbot(":3")
-        return {"status": "ok", "triggered": True, "response": ":3"}
+    if not should_respond or not text:
+        return {"status": "ok", "triggered": False}
 
-    return {"status": "ok", "triggered": False}
+    response_text = await _generate_response(text)
+    await _post_to_streamerbot(response_text, post_to_chat=True, tts=tts)
+
+    return {
+        "message": response_text,
+        "postToChat": True,
+        "TTS": tts,
+    }
