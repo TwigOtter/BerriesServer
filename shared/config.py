@@ -58,5 +58,5 @@ DISCORD_BERRIES_CHANNEL_IDS: list[int] = [
 STREAMERBOT_CALLBACK_URL = os.getenv("STREAMERBOT_CALLBACK_URL", "http://127.0.0.1:7474")  # URL to POST responses back
 TWITCH_CHANNEL = os.getenv("TWITCH_CHANNEL", "twigotter")
 
-# ── stream_utils ───────────────────────────────────────────────────────────
-SQLITE_DB_PATH = DATA_DIR / "stream_utils.db"
+# ── User database ──────────────────────────────────────────────────────────
+USERS_DB_PATH = DATA_DIR / "users.db"

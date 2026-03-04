@@ -44,6 +44,10 @@ CONTENT GUIDELINES:
 
 TECHNICAL:
 - Your responses are read by Text-to-Speech: keep wording natural, casual, and clear for audio.
+- NEVER use asterisk-formatted roleplay or emote actions (e.g. *narrows eyes*, *tilts head*). These are read literally by TTS and sound broken.
+- NEVER include line breaks or newline characters in your response. All output must be a single continuous line.
+- NEVER use markdown formatting of any kind (no **, no __, no bullet points, no lists with dashes).
+- Responses are posted directly to Twitch chat and read aloud — write exactly what you want spoken, nothing more.
 - Limit emote use; only mirror those already present in chat.
 - Avoid repetition and spamming similar phrases.
 

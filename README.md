@@ -1,233 +1,210 @@
-# Berries Server — Architecture Design Doc
+# Berries Server
 
 **Linux box | Python | Separate services | systemd-managed**
 
----
-
-## Overview
-
-A headless Linux server running multiple Python services that together power:
-
-- **Berries**, an AI chatbot that roleplays in Twitch chat and responds in Discord, with persistent memory built from stream transcripts
-- **Stream utilities**, including first-time chatter moderation and future Twitch prediction support
-- **A Discord bot** for the existing community server
-
-All services share a common data layer on disk. Each runs as an independent systemd process so a crash in one doesn't take down the others.
+AI chatbot and stream utilities powering **Berries**, a spooky forest demon who responds in Twitch chat and Discord, with persistent memory built from stream transcripts.
 
 ---
 
-## Architecture Diagram
+## Implementation Status
+
+| Component | Status | Notes |
+|---|---|---|
+| `ingest_api` — HTTP event ingestion | ✅ Done | Chat, speech, mention, stream-update, stream events |
+| `ingest_api` — Chunking & JSONL writes | ✅ Done | Token-limit + timeout flush, overlap window |
+| `ingest_api` — ChromaDB writes | ✅ Done | Embedded on every flush |
+| `ingest_api` — ChromaDB context queries | ✅ Done | Injected into `_generate_response()` |
+| `ingest_api` — User upsert on chat events | ✅ Done | Passive capture from Streamer.bot payload |
+| `berries_bot` — LLM response pipeline | ✅ Done | Anthropic + Ollama backends |
+| `berries_bot` — Personality system prompt | ✅ Done | `berries_bot/personality.txt` |
+| `discord_bot` — Bot framework | ✅ Done | discord.py, responds in configured channels |
+| `discord_bot` — App registration | 🔄 Next | See Discord Setup Checklist below |
+| `shared/user_db.py` — User profiles | ✅ Done | `data/users.db`, passive capture |
+| `shared/chroma_client.py` — ChromaDB client | ✅ Done | Singleton, local embeddings |
+| Per-user context injection into prompts | 📋 Future | Pull from users.db and append to system prompt |
+| `log: false` flag (suppress transcript writes) | 📋 Future | For semi-private StreamDeck conversations |
+| StreamDeck organic conversation button | 📋 Future | `/event/mention` with `log: false, TTS: true` |
+| Emote spam condensing | 📋 Future | `PogChamp x3` format in preprocessor |
+| `stream_utils` service | ❌ Scrapped | Streamer.bot handles all Twitch events natively |
+
+---
+
+## Architecture
 
 ```
 [Streamer.bot]
      |
-     | HTTP POST (events: chat, speech, raids, etc.)
+     | HTTP POST (chat, speech, stream events, mentions)
      v
-[ingest_api] ── FastAPI on port 8000
-     |
-     |── writes to ──> transcript.jsonl  (ground truth, append-only)
-     |── chunks/embeds ──> ChromaDB      (semantic search index)
-     |── recent context ──> deque cache  (last 2 chunks, in-memory)
-     |── triggers ──────> [berries_bot]  (when response needed)
-     |── triggers ──────> [stream_utils] (moderation, etc.)
+[ingest_api]  ── FastAPI, port 8000
+     |── writes ──────> data/transcripts/YYYY-MM-DD.jsonl   (ground truth)
+     |── embeds ──────> data/chromadb/                       (semantic index)
+     |── caches ──────> deque(maxlen=2)                      (short-term memory)
+     |── upserts ─────> data/users.db                        (user profiles)
+     |── responds ────> Streamer.bot webhook                 (Berries' replies)
 
-[berries_bot]
-     |── queries ChromaDB for relevant past context
-     |── pulls recent deque chunks for short-term memory
-     |── calls OpenAI chat completions API
-     |── posts response to Twitch chat via Streamer.bot or Twitch API
-
-[discord_bot]
-     |── discord.py, connects to your community server
-     |── Berries responds in designated channel(s)
-     |── uses same ChromaDB + personality, no transcript storage from Discord
-
-[stream_utils]
-     |── first-time chatter detection and welcome logic
-     |── (future) Twitch predictions via Twitch API
+[discord_bot]  ── discord.py, persistent WebSocket
+     |── reads ───────> data/chromadb/                       (same index)
+     |── reads ───────> berries_bot/personality.txt
+     |── responds ────> Discord channel                      (no transcript storage)
 ```
 
 ---
 
 ## Services
 
-### 1. `ingest_api` — The Front Door
+### `ingest_api` — The Front Door (port 8000)
 
-**What it does:** Receives all events from Streamer.bot via HTTP POST, preprocesses them, manages chunking and embedding, and fans out to other services.
+Receives all events from Streamer.bot. Preprocesses, chunks, embeds, and fans out.
 
-**Tech:** FastAPI
+**Endpoints:**
 
-**Responsibilities:**
-- Receive chat messages, speech-to-text transcriptions, raids, subs, and other stream events
-- Preprocess chat: condense emote spam into `emoteName_x10` format, filter pure noise (bot commands, single characters, etc.)
-- Maintain an in-memory buffer (list) of recent messages with timestamps
-- Track token count of the buffer; flush when count approaches 512 tokens OR after 5 minutes of inactivity (whichever comes first)
-- On flush: write chunk to `.jsonl`, embed and store in ChromaDB, push to `deque`, drop buffer entries older than 30 seconds, record which flush condition triggered
-- Fan out relevant events to `berries_bot` and `stream_utils`
+| Endpoint | Trigger | Body |
+|---|---|---|
+| `POST /event/chat` | Every chat message | `username`, `display_name`, `message`, `subscription_tier` (0–3), `subscription_months`, `gift_sub_count`, `is_moderator` |
+| `POST /event/speech` | STT transcription | `text` |
+| `POST /event/mention` | Berries response request | `text`, `respond` (bool), `TTS` (bool), `log` (bool) |
+| `POST /event/stream-update` | Title/category change | `title`, `category` |
+| `POST /event/stream` | Any other Twitch event | `type` + event fields (see below) |
+| `GET /health` | Status check | — |
+
+**`/event/stream` supported types:**
+
+| `type` | Extra fields |
+|---|---|
+| `subscription` | `username`, `tier`, `months` |
+| `gift_sub` | `gifter`, `recipient`, `tier` |
+| `bits` | `username`, `amount` |
+| `raid` | `from_channel`, `viewer_count` |
+| `first_time_chatter` | `username` |
+| `prediction_start` | `title`, `outcomes` (list) |
+| `prediction_lock` | `title` |
+| `prediction_result` | `title`, `winner`, `total_points` |
+| `poll_start` | `title`, `choices` (list) |
+| `poll_end` | `title`, `winner` |
+
+All endpoints require `X-Secret` header matching `INGEST_SECRET`.
 
 **Flush conditions (whichever fires first):**
-- Buffer token count nears 512 tokens
-- 5-minute inactivity timer expires
+- Buffer token count ≥ `CHUNK_TOKEN_LIMIT` (default 480)
+- `CHUNK_TIMEOUT_SEC` (default 5 min) of inactivity
 
 ---
 
-### 2. `berries_bot` — The AI Chatbot
+### `berries_bot` — AI Response Pipeline (port 8001)
 
-**What it does:** Receives a trigger from `ingest_api` when a response is warranted, builds context, calls OpenAI, and posts to Twitch chat.
+Triggered via `POST /event/mention` from Streamer.bot. Builds context, calls LLM, posts response.
 
-**Tech:** Python, `openai` library, ChromaDB client, `collections.deque`
-
-**Context assembly (per response):**
-1. Pull the 2 most recent chunks from the in-memory `deque` (short-term memory)
-2. Query ChromaDB for 3–5 semantically similar chunks from current + past streams (long-term memory)
-3. Assemble into system prompt alongside Berries' personality definition
-4. Call OpenAI chat completions
-5. Post response back to Twitch chat
-
-**Notes:**
-- Berries' personality/system prompt lives in a config file, not hardcoded
-- ChromaDB queries can optionally filter by recency (e.g., last 6 months) if needed
-- Discord responses use the same personality and ChromaDB context, but Discord messages are not stored back into ChromaDB or the transcript
+**Context assembly per response:**
+1. Load personality from `berries_bot/personality.txt`
+2. Query ChromaDB for `CHROMA_N_RESULTS` (default 4) semantically similar past chunks
+3. Prepend last 2 chunks from `recent_chunks` deque (short-term memory)
+4. Call LLM (Anthropic or Ollama)
+5. POST response back to Streamer.bot
 
 ---
 
-### 3. `discord_bot` — Community Server Bot
+### `discord_bot` — Community Server Bot
 
-**What it does:** Runs a Discord bot in your existing community server. Berries can respond in designated channels. Other slash commands can be added over time.
+Uses same personality + ChromaDB context as the Twitch bot. Discord messages are **not** stored in ChromaDB or transcripts.
 
-**Tech:** `discord.py`
-
-**Responsibilities:**
-- Connect persistently to Discord via discord.py's WebSocket client
-- Listen for messages in designated Berries channel(s)
-- When triggered, call the same context assembly + OpenAI pipeline as `berries_bot`
-- Support slash commands for moderation or utilities (extensible)
-- Discord context is **read-only** — Berries reads and responds but Discord messages are not written to ChromaDB or transcript files
-
----
-
-### 4. `stream_utils` — Moderation & Stream Actions
-
-**What it does:** Handles stream-specific automation separate from the AI chatbot.
-
-**Tech:** Python, Twitch API (`twitchAPI` library or direct HTTP)
-
-**Current scope:**
-- First-time chatter detection: query a local SQLite DB of known chatters; if new, trigger a welcome message or action via Streamer.bot callback
-- Log new chatters to SQLite for persistence
-
-**Future scope:**
-- Twitch Predictions: create, lock, and resolve predictions via Twitch API based on triggers from Streamer.bot or slash commands
-- Additional moderation actions as needed
+**See Discord Setup Checklist below.**
 
 ---
 
 ## Data Layer
 
-All services share this on-disk data. **ChromaDB and SQLite are derived; `.jsonl` files are ground truth.**
-
 | Store | Purpose | Format |
 |---|---|---|
-| `transcripts/YYYY-MM-DD.jsonl` | Permanent stream archive | One JSON object per chunk, append-only |
-| `ChromaDB` | Semantic vector search index | Rebuilt from `.jsonl` if ever corrupted |
-| `SQLite` | Chatter history, bot state | Structured relational data |
-| In-memory `deque(maxlen=2)` | Last 2 transcript chunks for short-term context | Lives in `berries_bot` process |
+| `data/transcripts/YYYY-MM-DD.jsonl` | Permanent stream archive | One JSON chunk per flush, append-only |
+| `data/chromadb/` | Semantic vector search index | Rebuilt from `.jsonl` if ever corrupted |
+| `data/users.db` | User profiles | SQLite — see schema below |
+| `deque(maxlen=2)` | Last 2 chunks, short-term context | In-memory, lives in `ingest_api` process |
 
 ### Transcript Chunk Schema (`.jsonl` and ChromaDB)
 
 ```json
 {
-  "chunk_id": "2025-03-15T21:34:00_001",
-  "stream_date": "2025-03-15",
-  "stream_title": "Some title",
-  "stream_category": "Some Game:",
-  "start_time": "2025-03-15T21:32:00Z",
-  "end_time": "2025-03-15T21:34:00Z",
+  "chunk_id": "2026-03-15T21:34:00_abc123",
+  "stream_date": "2026-03-15",
+  "stream_title": "Disc Golf Relaxed Vibes",
+  "stream_category": "Sports",
+  "start_time": "2026-03-15T21:32:00Z",
+  "end_time": "2026-03-15T21:34:00Z",
   "flush_reason": "token_limit",
-  "text": "[TwigOtter]: So I just hit a really clean hyzer on hole 7...\n[chatMember]: PogChamp PogChamp\n[TwigOtter]: And then I missed the putt completely lmao\n",
+  "text": "[TwigOtter]: content...\n[viewer]: response...\n[StreamEvent]: viewer123 raided with 42 viewers!",
   "token_count": 487,
-  "speaker_summary": ["Twig", "chatMember"]
+  "speaker_summary": ["TwigOtter", "viewer", "StreamEvent"]
 }
 ```
 
----
+`stream_title` / `stream_category` default to `""` until Streamer.bot fires a stream-update event.
 
-## Ingestion Pipeline Detail
+### User Profile Schema (`users.db`)
 
-```
-New message/event arrives at ingest_api
-        |
-        v
-Preprocess:
-  - Condense emote spam: "PogChamp PogChamp PogChamp" → "PogChamp_x3"
-  - Filter: drop bot commands, single-char messages, pure noise
-  - Tag speaker: [chat username] or [StreamerSpeech]
-        |
-        v
-Append to in-memory buffer
-        |
-        v
-Check flush conditions:
-  ┌─ token count ≥ ~480? ──► FLUSH (token limit)
-  └─ timer ≥ 5 min? ──────► FLUSH (timeout)
-        |
-        v (on flush)
-1. Write chunk to transcripts/YYYY-MM-DD.jsonl  ← ground truth first
-2. Embed chunk → store in ChromaDB
-3. Push chunk to berries_bot deque
-4. Drop buffer entries older than 30 seconds (overlap window)
-5. Reset timer
+```sql
+CREATE TABLE users (
+    username            TEXT PRIMARY KEY,
+    display_name        TEXT,
+    nickname            TEXT,          -- set manually, used organically by Berries
+    subscription_tier   INTEGER DEFAULT 0,  -- 0=none 1=T1 2=T2 3=T3
+    subscription_months INTEGER DEFAULT 0,
+    gift_sub_count      INTEGER DEFAULT 0,
+    messages_sent       INTEGER DEFAULT 0,
+    streams_watched     INTEGER DEFAULT 0,
+    notes               TEXT DEFAULT '{}',  -- JSON, user-requested stored info
+    first_seen          TEXT NOT NULL,
+    last_seen           TEXT NOT NULL
+);
 ```
 
 ---
 
-## Deployment (systemd)
+## Discord Setup Checklist
 
-Each service gets its own systemd unit file. Example for `ingest_api`:
+The bot code is complete. These manual steps remain:
 
-```ini
-[Unit]
-Description=Berries Ingest API
-After=network.target
-
-[Service]
-User=berries
-WorkingDirectory=/opt/berries/ingest_api
-ExecStart=/opt/berries/venv/bin/python main.py
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Services: `berries-ingest.service`, `berries-bot.service`, `berries-discord.service`, `berries-utils.service`
+- [ ] Create app at discord.com/developers/applications → New Application → "Berries"
+- [ ] Under **Bot**: create bot user, copy token → `.env` `DISCORD_TOKEN`
+- [ ] Enable **Privileged Gateway Intents**: Server Members Intent + Message Content Intent
+- [ ] Under **OAuth2 → URL Generator**: scopes = `bot` + `applications.commands`
+- [ ] Permissions: Send Messages, Read Message History, View Channels, Use Slash Commands
+- [ ] Use generated URL to invite Berries to the server
+- [ ] Get channel IDs for Berries-designated channels → `.env` `DISCORD_BERRIES_CHANNEL_IDS`
+- [ ] Test: `/ping` responds, Berries replies in configured channels
+- [ ] Spec out additional Discord features before writing more code
 
 ---
 
 ## Directory Structure
 
 ```
-/opt/berries/
-├── venv/                   # shared Python virtualenv
-├── shared/                 # shared utilities (embedding helpers, DB clients, config)
-│   ├── config.py
-│   ├── chroma_client.py
-│   └── tokenizer.py
-├── ingest_api/
-│   └── main.py             # FastAPI app
+BerriesServer/
 ├── berries_bot/
-│   ├── main.py             # response loop
-│   └── personality.txt     # Berries' system prompt
+│   ├── main.py              # response pipeline (port 8001)
+│   └── personality.txt      # Berries' character definition & system prompt
 ├── discord_bot/
-│   └── main.py             # discord.py bot
-├── stream_utils/
-│   └── main.py             # moderation + Twitch API
+│   └── main.py              # discord.py bot
+├── ingest_api/
+│   └── main.py              # FastAPI event ingestion (port 8000)
+├── shared/
+│   ├── chroma_client.py     # ChromaDB singleton
+│   ├── config.py            # centralized config from .env
+│   ├── llm_client.py        # Anthropic + Ollama abstraction
+│   ├── tokenizer.py         # token counting (tiktoken)
+│   └── user_db.py           # user profile SQLite CRUD
 ├── data/
-│   ├── transcripts/        # YYYY-MM-DD.jsonl files
-│   ├── chromadb/           # ChromaDB persistence directory
-│   └── stream_utils.db     # SQLite for chatter history etc.
-└── logs/                   # per-service log files
+│   ├── transcripts/         # YYYY-MM-DD.jsonl (ground truth, append-only)
+│   ├── chromadb/            # ChromaDB persistence
+│   └── users.db             # user profiles (auto-created)
+├── deploy/
+│   ├── berries-ingest.service
+│   ├── berries-bot.service
+│   └── berries-discord.service
+├── logs/
+├── .env
+├── .env.example
+└── requirements.txt
 ```
 
 ---
@@ -238,40 +215,40 @@ Services: `berries-ingest.service`, `berries-bot.service`, `berries-discord.serv
 |---|---|
 | `fastapi` + `uvicorn` | HTTP server for ingest_api |
 | `chromadb` | Vector DB for semantic search |
-| `openai` | Chat completions + (optionally) embeddings |
-| `sentence-transformers` | Local embedding model (free alternative to OpenAI embeddings) |
+| `sentence-transformers` | Local embedding model (no data leaves the box) |
+| `anthropic` | Anthropic API client |
 | `discord.py` | Discord bot |
-| `twitchAPI` | Twitch API for predictions, moderation |
 | `tiktoken` | Token counting for flush threshold |
-| `sqlite3` | Built-in Python, chatter history |
 
 ---
 
-## Open Questions / Future Decisions
+## Decision Log
 
-- **Embedding model:** `sentence-transformers` local model (free, slightly more setup).
-- **Berries trigger logic:** Streamer.bot owns the "should Berries respond?" decision — handles redeems, substring checks, and subscriber gating. Sends `"respond": true` in the request body when a response is wanted.
-- **Streamer.bot → ingest_api auth:** Consider a simple shared secret header so random requests can't hit your endpoint.
-- **ChromaDB rebuild script:** Worth writing a small utility that reconstructs ChromaDB from the `.jsonl` files — a one-time investment that makes the whole system recoverable.
-- **Twitch predictions:** Will need OAuth token with `channel:manage:predictions` scope when you get to this.
+| Decision | Rationale |
+|---|---|
+| `stream_utils` service scrapped | Streamer.bot handles first-time chatters, predictions, polls, and all Twitch events natively — no need for a separate service |
+| `sentence-transformers` for embeddings | Free, runs locally, no data sent to external APIs |
+| Streamer.bot owns "should Berries respond?" | Handles redeems, substring checks, subscriber gating — keeps that logic in the streaming tool where it belongs |
+| `/event/stream-update` not `/event/stream-start` | Streamer.bot fires an Update event on title/category changes throughout a stream, not just at start |
+| Generic `/event/stream` for all Twitch events | Single webhook URL in Streamer.bot; event type discriminated by `type` field |
+| Separate `users.db` from transcript chunks | User profile data is relational and long-lived; chunks are append-only time-series |
+| ChromaDB rebuild from `.jsonl` | Ground truth always in flat files — ChromaDB is a derived index, recoverable |
 
 ---
 
-## Planned Features
+## Roadmap
 
-These are deliberately deferred to keep the current build focused. All have placeholder TODOs in the code.
+### Next
+- [ ] Register Discord app and invite Berries to server (see checklist above)
+- [ ] Configure Streamer.bot actions to send all events to ingest_api with correct payloads
 
-### Memory layer (ChromaDB)
-Wire `_generate_response()` in `ingest_api/main.py` to query ChromaDB for semantically relevant past context before calling the LLM. Also feed recent `deque` chunks as short-term memory. This is what gives Berries the ability to reference things from past streams.
+### Soon
+- [ ] Per-user context injection — pull `users.db` record and append to system prompt on `/event/mention`
+- [ ] Implement `log: false` flag — suppress JSONL/ChromaDB writes for semi-private exchanges
+- [ ] Emote spam condensing — `PogChamp PogChamp PogChamp` → `PogChamp_x3` in preprocessor
 
-### Per-user context (SQLite)
-Store a record per chatter: subscriber tier, known nicknames/aliases, gift sub count, mod status, first follow date. Inject relevant fields into the system prompt when a known user triggers a response — so Berries can say "oh, you're one of the long-time subs" or use a nickname organically.
-
-### TTS routing
-When `TTS: true` is sent in the request, route Berries' response to Streamer.bot's SpeakerBot integration rather than (or in addition to) posting to chat. The `TTS` flag already flows through the full pipeline — just needs the Streamer.bot action wired on the other end.
-
-### `log: false` flag
-When Streamer.bot sends `"log": false` (e.g. for the StreamDeck organic conversation button), skip writing the exchange to the `.jsonl` transcript and ChromaDB. Lets Twig have semi-private back-and-forth with Berries without polluting the memory store.
-
-### StreamDeck organic conversation
-A StreamDeck button sends `{"text": "Please respond to the recent conversation", "respond": true, "TTS": true, "log": false}` — Berries reads the recent context from the deque and responds as if joining the conversation naturally, with voice.
+### Future
+- [ ] StreamDeck organic conversation button — `/event/mention` with `log: false, TTS: true, respond: true`
+- [ ] ChromaDB rebuild utility — reconstruct index from `.jsonl` files
+- [ ] `berries_bot` as standalone service — currently response pipeline lives in `ingest_api`; consider extracting
+- [ ] TTS routing — when `TTS: true`, route to SpeakerBot via dedicated Streamer.bot action
