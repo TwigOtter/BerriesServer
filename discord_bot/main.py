@@ -49,6 +49,8 @@ def _get_context(query: str) -> str:
 async def on_ready() -> None:
     print(f"[discord_bot] Logged in as {bot.user} (id: {bot.user.id})")
     print(f"[discord_bot] Watching channel IDs: {DISCORD_BERRIES_CHANNEL_IDS}")
+    synced = await bot.tree.sync()
+    print(f"[discord_bot] Synced {len(synced)} slash command(s)")
 
 
 @bot.event
