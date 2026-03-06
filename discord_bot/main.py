@@ -49,6 +49,7 @@ from shared.movie_db import (
     get_suggestion,
     init_movie_db,
     mark_watched,
+    remove_suggestion,
 )
 
 # ── Logging ────────────────────────────────────────────────────────────────
@@ -319,6 +320,33 @@ async def suggested_movies(interaction: discord.Interaction) -> None:
     for i, m in enumerate(suggestions, 1):
         lines.append(f"{i}. **{m['title']}** ({m['year']}) — suggested by {m['suggested_by']}")
     await interaction.response.send_message("\n".join(lines))
+
+
+@bot.tree.command(name="remove-suggestion", description="Remove a movie from the suggestion list")
+@app_commands.default_permissions(manage_messages=True)
+@app_commands.describe(title="Title of the movie to remove")
+async def remove_suggestion_cmd(interaction: discord.Interaction, title: str) -> None:
+    await interaction.response.defer()
+
+    result = await _omdb_search(title)
+    if not result:
+        await interaction.followup.send(
+            f"*rustles in the shadows* ...couldn't find **{title}** on OMDb. Try a more specific title?"
+        )
+        return
+
+    imdb_id = result["imdbID"]
+    movie_title = result["Title"]
+    year = result["Year"]
+
+    removed = remove_suggestion(imdb_id)
+    if removed:
+        log.info("Removed suggestion %r (%s) by %s", movie_title, imdb_id, interaction.user)
+        await interaction.followup.send(f"Removed **{movie_title} ({year})** from the suggestion list.")
+    else:
+        await interaction.followup.send(
+            f"**{movie_title} ({year})** isn't on the suggestion list."
+        )
 
 
 @bot.tree.command(name="past-movies", description="See movies we've already watched")
