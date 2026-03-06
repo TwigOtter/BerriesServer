@@ -33,6 +33,7 @@ from shared.config import (
     CHUNK_TIMEOUT_SEC,
     CHUNK_TOKEN_LIMIT,
     CHROMA_N_RESULTS,
+    DISCORD_BOT_WEBHOOK_URL,
     INGEST_SECRET,
     PERSONALITY_FILE,
     STREAMERBOT_CALLBACK_URL,
@@ -330,6 +331,35 @@ async def receive_stream_event(
         await _flush_buffer(reason="token_limit")
 
     print(f"[ingest_api] /event/stream ({event_type}) — {line}")
+    return {"status": "ok"}
+
+
+@app.post("/event/going-live")
+async def going_live(
+    request: Request,
+    x_secret: str | None = Header(default=None),
+) -> dict:
+    """
+    Receive a going-live event from Streamer.bot and forward to the Discord bot webhook.
+
+    Expected body:
+        {"title": "Stream title here", "category": "Games & Demos"}
+    """
+    _auth_check(x_secret)
+    body = await request.json()
+
+    print(f"[ingest_api] /event/going-live — {body}")
+
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{DISCORD_BOT_WEBHOOK_URL}/event/going-live",
+                json=body,
+                timeout=10.0,
+            )
+    except Exception as e:
+        print(f"[ingest_api] Failed to forward going-live to discord_bot: {e}")
+
     return {"status": "ok"}
 
 

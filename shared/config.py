@@ -53,6 +53,16 @@ DISCORD_BERRIES_CHANNEL_IDS: list[int] = [
     int(x) for x in os.getenv("DISCORD_BERRIES_CHANNEL_IDS", "").split(",")
     if x.strip()
 ]
+_announce_id = os.getenv("DISCORD_ANNOUNCE_CHANNEL_ID", "")
+DISCORD_ANNOUNCE_CHANNEL_ID: int | None = int(_announce_id) if _announce_id else None
+DISCORD_BOT_WEBHOOK_PORT = int(os.getenv("DISCORD_BOT_WEBHOOK_PORT", "8002"))
+DISCORD_BOT_WEBHOOK_URL = os.getenv("DISCORD_BOT_WEBHOOK_URL", "http://127.0.0.1:8002")
+
+# ── OMDb API ───────────────────────────────────────────────────────────────
+OMDB_API_KEY = os.getenv("OMDB_API_KEY", "")
+
+# ── Giphy API ──────────────────────────────────────────────────────────────
+GIPHY_API_KEY = os.getenv("GIPHY_API_KEY", "")
 
 # ── Twitch / Streamer.bot ──────────────────────────────────────────────────
 STREAMERBOT_CALLBACK_URL = os.getenv("STREAMERBOT_CALLBACK_URL", "http://127.0.0.1:7474")  # URL to POST responses back
