@@ -14,6 +14,8 @@ Run with:
 """
 
 import asyncio
+import logging
+import logging.handlers
 import random
 
 import discord
@@ -26,6 +28,7 @@ from fastapi import FastAPI, Request
 from shared.chroma_client import get_collection
 from shared.config import (
     CHROMA_N_RESULTS,
+    LOGS_DIR,
     DISCORD_ANNOUNCE_CHANNEL_ID,
     DISCORD_BERRIES_CHANNEL_IDS,
     DISCORD_BOT_WEBHOOK_PORT,
@@ -48,6 +51,40 @@ from shared.movie_db import (
     mark_watched,
 )
 
+# ── Logging ────────────────────────────────────────────────────────────────
+
+def _setup_logger() -> logging.Logger:
+    logger = logging.getLogger("discord_bot")
+    logger.setLevel(logging.DEBUG)
+
+    fmt = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    # Console handler — INFO and above
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(fmt)
+    logger.addHandler(ch)
+
+    # File handler — DEBUG and above, rotates at 5 MB, keeps 3 backups
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    fh = logging.handlers.RotatingFileHandler(
+        LOGS_DIR / "discord_bot.log",
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(fmt)
+    logger.addHandler(fh)
+
+    return logger
+
+
+log = _setup_logger()
+
 # ── Bot setup ──────────────────────────────────────────────────────────────
 
 intents = discord.Intents.default()
@@ -69,11 +106,15 @@ def _load_personality() -> str:
 
 
 def _get_chroma_context(query: str) -> str:
-    collection = get_collection()
-    results = collection.query(query_texts=[query], n_results=CHROMA_N_RESULTS)
-    docs = results.get("documents", [[]])[0]
-    if docs:
-        return "=== RELEVANT PAST STREAM CONTEXT ===\n" + "\n\n".join(docs)
+    try:
+        collection = get_collection()
+        results = collection.query(query_texts=[query], n_results=CHROMA_N_RESULTS)
+        docs = results.get("documents", [[]])[0]
+        log.debug("ChromaDB returned %d doc(s) for query: %.80r", len(docs), query)
+        if docs:
+            return "=== RELEVANT PAST STREAM CONTEXT ===\n" + "\n\n".join(docs)
+    except Exception:
+        log.exception("ChromaDB query failed")
     return ""
 
 
@@ -81,22 +122,31 @@ async def _llm(user_message: str, system_suffix: str = "") -> str:
     """Call the LLM with Berries' personality plus an optional extra system block."""
     personality = _load_personality()
     system = personality + (f"\n\n{system_suffix}" if system_suffix else "")
-    return await get_completion(system_prompt=system, user_message=user_message)
+    log.debug("LLM call — user_message: %.120r", user_message)
+    response = await get_completion(system_prompt=system, user_message=user_message)
+    log.debug("LLM response: %.120r", response)
+    return response
 
 
 async def _omdb_search(title: str) -> dict | None:
     """Search OMDb for a movie by title. Returns the first result dict or None."""
     if not OMDB_API_KEY:
+        log.debug("OMDB_API_KEY not set; skipping OMDb search")
         return None
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            "https://www.omdbapi.com/",
-            params={"s": title, "type": "movie", "apikey": OMDB_API_KEY},
-            timeout=5.0,
-        )
-    data = resp.json()
-    if data.get("Response") == "True" and data.get("Search"):
-        return data["Search"][0]  # {"Title", "Year", "imdbID", "Type", "Poster"}
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                "https://www.omdbapi.com/",
+                params={"s": title, "type": "movie", "apikey": OMDB_API_KEY},
+                timeout=5.0,
+            )
+        data = resp.json()
+        if data.get("Response") == "True" and data.get("Search"):
+            log.debug("OMDb found %d result(s) for %r", len(data["Search"]), title)
+            return data["Search"][0]
+        log.debug("OMDb returned no results for %r: %s", title, data.get("Error", "unknown"))
+    except Exception:
+        log.exception("OMDb search failed for %r", title)
     return None
 
 
@@ -111,41 +161,56 @@ async def _gif_search_query(context: str) -> str:
 async def _fetch_gif(query: str) -> str | None:
     """Search Giphy and return a random GIF URL from the top results."""
     if not GIPHY_API_KEY:
+        log.debug("GIPHY_API_KEY not set; skipping GIF search")
         return None
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            "https://api.giphy.com/v1/gifs/search",
-            params={"q": query, "api_key": GIPHY_API_KEY, "limit": 8, "rating": "pg-13"},
-            timeout=5.0,
-        )
-    results = resp.json().get("data", [])
-    if not results:
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                "https://api.giphy.com/v1/gifs/search",
+                params={"q": query, "api_key": GIPHY_API_KEY, "limit": 8, "rating": "pg-13"},
+                timeout=5.0,
+            )
+        results = resp.json().get("data", [])
+        if not results:
+            log.debug("Giphy returned no results for %r", query)
+            return None
+        pick = random.choice(results[:5])
+        return pick.get("images", {}).get("original", {}).get("url")
+    except Exception:
+        log.exception("Giphy search failed for %r", query)
         return None
-    pick = random.choice(results[:5])
-    return pick.get("images", {}).get("original", {}).get("url")
 
 
 async def _post_to_announce(message: str) -> bool:
     """Post a message to the announce channel. Returns True on success."""
     if not DISCORD_ANNOUNCE_CHANNEL_ID:
+        log.warning("DISCORD_ANNOUNCE_CHANNEL_ID not set; cannot post announcement")
         return False
     channel = bot.get_channel(DISCORD_ANNOUNCE_CHANNEL_ID)
     if not channel:
-        print(f"[discord_bot] Announce channel {DISCORD_ANNOUNCE_CHANNEL_ID} not found in cache")
+        log.error("Announce channel %s not found in cache", DISCORD_ANNOUNCE_CHANNEL_ID)
         return False
-    await channel.send(message)
-    return True
+    try:
+        await channel.send(message)
+        log.info("Posted announcement to channel %s", DISCORD_ANNOUNCE_CHANNEL_ID)
+        return True
+    except Exception:
+        log.exception("Failed to post to announce channel %s", DISCORD_ANNOUNCE_CHANNEL_ID)
+        return False
 
 
 # ── Events ─────────────────────────────────────────────────────────────────
 
 @bot.event
 async def on_ready() -> None:
-    print(f"[discord_bot] Logged in as {bot.user} (id: {bot.user.id})")
-    print(f"[discord_bot] Watching channel IDs: {DISCORD_BERRIES_CHANNEL_IDS}")
+    log.info("Logged in as %s (id: %s)", bot.user, bot.user.id)
+    log.info("Watching channel IDs: %s", DISCORD_BERRIES_CHANNEL_IDS)
     init_movie_db()
-    synced = await bot.tree.sync()
-    print(f"[discord_bot] Synced {len(synced)} slash command(s)")
+    try:
+        synced = await bot.tree.sync()
+        log.info("Synced %d slash command(s)", len(synced))
+    except Exception:
+        log.exception("Failed to sync slash commands")
 
 
 @bot.event
@@ -158,6 +223,10 @@ async def on_message(message: discord.Message) -> None:
     if not mentioned:
         # Outside whitelisted channels, ignore regular messages
         if DISCORD_BERRIES_CHANNEL_IDS and message.channel.id not in DISCORD_BERRIES_CHANNEL_IDS:
+            log.debug(
+                "Ignoring message in non-whitelisted channel %s from %s",
+                message.channel.id, message.author,
+            )
             await bot.process_commands(message)
             return
 
@@ -166,15 +235,31 @@ async def on_message(message: discord.Message) -> None:
         content = content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
 
     if not content:
+        log.debug("Ignoring empty message from %s in channel %s", message.author, message.channel.id)
         return
 
-    async with message.channel.typing():
-        context = _get_chroma_context(content)
-        system_prompt = _load_personality() + (f"\n\n{context}" if context else "")
-        user_message = f"{message.author.display_name}: {content}"
-        response = await get_completion(system_prompt=system_prompt, user_message=user_message)
+    log.info(
+        "Responding to %s in channel %s (mentioned=%s): %.120r",
+        message.author, message.channel.id, mentioned, content,
+    )
 
-    await message.channel.send(response)
+    try:
+        async with message.channel.typing():
+            context = _get_chroma_context(content)
+            system_prompt = _load_personality() + (f"\n\n{context}" if context else "")
+            user_message = f"{message.author.display_name}: {content}"
+            log.debug("Calling LLM for on_message")
+            response = await get_completion(system_prompt=system_prompt, user_message=user_message)
+            log.debug("LLM response for on_message: %.120r", response)
+
+        await message.channel.send(response)
+        log.info("Sent response to %s in channel %s", message.author, message.channel.id)
+    except Exception:
+        log.exception(
+            "Failed to generate/send response to %s in channel %s",
+            message.author, message.channel.id,
+        )
+
     await bot.process_commands(message)
 
 
@@ -303,6 +388,7 @@ async def going_live(request: Request) -> dict:
     body = await request.json()
     stream_title = body.get("title", "")
     category = body.get("category", "")
+    log.info("Going-live event received: title=%r, category=%r", stream_title, category)
 
     announcement = await _llm(
         f"TwigOtter just went live on Twitch! Stream title: '{stream_title}', category: '{category}'. "
