@@ -11,6 +11,7 @@ Changelog, roadmap, and decisions. Updated at the end of each work session.
 - [ ] Configure Streamer.bot actions to POST all events to `ingest_api` with correct payloads
 
 ### Soon
+- [ ] Add logging to `discord_bot` — currently no structured log output; add file-based logging (rotating, to `logs/`) covering slash command usage, announce posts, going-live events, GIF fetch failures, and @mention responses
 - [ ] Per-user context injection — on `/event/mention`, pull the user's `users.db` record and append relevant fields (nickname, sub tier, etc.) to the system prompt
 - [ ] `log: false` flag — when Streamer.bot sends `"log": false`, suppress JSONL + ChromaDB writes for semi-private exchanges
 - [ ] Emote spam condensing — `PogChamp PogChamp PogChamp` → `PogChamp_x3` in `_preprocess_message()`
@@ -35,7 +36,13 @@ Bot code is complete. These manual steps remain:
 - [x] Use the generated URL to invite Berries to the server
 - [x] Get numeric channel IDs for Berries-designated channels → `.env` as `DISCORD_BERRIES_CHANNEL_IDS`
 - [x] Test: `/ping` responds; Berries replies in configured channels
-- [ ] Spec out additional Discord features before writing more code
+- [x] Spec out additional Discord features before writing more code
+- [x] Get OMDb API key (free at omdbapi.com) → `.env` as `OMDB_API_KEY`
+- [x] Get Giphy API key (free at developers.giphy.com) → `.env` as `GIPHY_API_KEY`
+- [x] Set `DISCORD_ANNOUNCE_CHANNEL_ID` — channel for going-live and movie night announcements
+- [x] Set `DISCORD_EVENT_ROLE_ID` — right-click role → Copy Role ID (requires Developer Mode)
+- [x] Set `DISCORD_STREAM_ROLE_ID` — same as above
+- [ ] Configure Streamer.bot to `POST /event/going-live` with `{"title": "...", "category": "..."}` on stream start
 
 ---
 
@@ -56,6 +63,44 @@ Bot code is complete. These manual steps remain:
 ## Changelog
 
 ### 2026-03-05
+
+**`discord_bot/main.py` — Major rewrite**
+
+- **Bug fix:** Added `await bot.tree.sync()` to `on_ready` — slash commands were defined but never registered with Discord's API, so `/ping` wasn't appearing
+- **@mention response:** Berries now responds when `@BerriesTheDemon` is mentioned in *any* channel (not just whitelisted ones); mention is stripped from content before LLM call
+- **Entry point changed:** `bot.run()` → `asyncio.run(_main())` using `bot.start()` inside `asyncio.gather` so the FastAPI webhook server runs concurrently
+- **Webhook server (port 8002):** New FastAPI app (`webhook_app`) runs alongside the bot; receives `POST /event/going-live` forwarded from `ingest_api`
+- **Going-live announcements:** LLM generates in-character announcement → pings `@Stream Notifications` role → appends Twitch link → fetches Giphy GIF → posts to announce channel
+- **New slash commands:**
+  - `/suggest-movie <title>` — OMDb lookup for canonical title/IMDB ID; rejects with in-character LLM message if already suggested or watched within 365 days
+  - `/suggested-movies` — lists current open suggestions
+  - `/past-movies` — lists watch history with dates (capped at 20)
+  - `/movie-time <title>` — mod-only (`manage_messages`); OMDb lookup → LLM announcement → pings `@Event Notifications` role → Giphy GIF → posts to announce channel → marks movie as watched in DB
+- **Giphy GIF integration:** On announcements, a second LLM call generates a 2–5 word search query; Giphy returns 8 results; a random pick from the top 5 is appended as a URL (Discord auto-embeds)
+
+**`shared/movie_db.py` — New file**
+- SQLite movie store sharing `data/users.db`
+- Tracks suggestions and watch history by IMDB ID (canonical key prevents duplicates regardless of title spelling)
+- Functions: `init_movie_db()`, `add_suggestion()`, `get_suggestion()`, `get_all_suggestions()`, `get_recent_watched()`, `get_all_watched()`, `mark_watched()`
+
+**`ingest_api/main.py`**
+- Added `POST /event/going-live` — receives event from Streamer.bot (with shared secret auth), forwards to `discord_bot` webhook at `DISCORD_BOT_WEBHOOK_URL`
+
+**`shared/config.py`**
+- Added: `DISCORD_ANNOUNCE_CHANNEL_ID`, `DISCORD_BOT_WEBHOOK_PORT`, `DISCORD_BOT_WEBHOOK_URL`, `DISCORD_EVENT_ROLE_ID`, `DISCORD_STREAM_ROLE_ID`, `OMDB_API_KEY`, `GIPHY_API_KEY`
+
+**Decision: Tenor → Giphy**
+- Tenor API is being deprecated; switched to Giphy (same shape: search → URL)
+
+**Decision: OMDb for movie canonicalization**
+- Users type free-form titles; OMDb returns a canonical title + IMDB ID used as the DB key — prevents duplicates like "LOTR" vs "Lord of the Rings: Fellowship of the Ring"
+
+**Decision: Manual polls**
+- Two-stage Discord poll workflow (all suggestions → top 2 → winner) kept manual; automating poll creation and result-querying was out of scope
+
+---
+
+### 2026-03-04
 
 **personality.txt**
 - Added explicit TECHNICAL rules prohibiting asterisk roleplay actions (`*narrows eyes*`), newlines, and markdown formatting — all of which break TTS readback
