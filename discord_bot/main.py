@@ -29,10 +29,13 @@ from shared.config import (
     DISCORD_ANNOUNCE_CHANNEL_ID,
     DISCORD_BERRIES_CHANNEL_IDS,
     DISCORD_BOT_WEBHOOK_PORT,
+    DISCORD_EVENT_ROLE_ID,
+    DISCORD_STREAM_ROLE_ID,
     DISCORD_TOKEN,
     GIPHY_API_KEY,
     OMDB_API_KEY,
     PERSONALITY_FILE,
+    TWITCH_CHANNEL,
 )
 from shared.llm_client import get_completion
 from shared.movie_db import (
@@ -252,6 +255,7 @@ async def past_movies(interaction: discord.Interaction) -> None:
 
 
 @bot.tree.command(name="movie-time", description="Announce tonight's movie and mark it as watched")
+@app_commands.default_permissions(manage_messages=True)
 @app_commands.describe(title="Movie title to announce")
 async def movie_time(interaction: discord.Interaction, title: str) -> None:
     await interaction.response.defer()
@@ -279,7 +283,8 @@ async def movie_time(interaction: discord.Interaction, title: str) -> None:
 
     gif_query = await _gif_search_query(f"Pick a GIF search term for a movie night announcement about: {movie_title} ({year})")
     gif_url = await _fetch_gif(gif_query.strip())
-    message = announcement + (f"\n{gif_url}" if gif_url else "")
+    role_ping = f"<@&{DISCORD_EVENT_ROLE_ID}>\n" if DISCORD_EVENT_ROLE_ID else ""
+    message = role_ping + announcement + (f"\n{gif_url}" if gif_url else "")
 
     posted = await _post_to_announce(message)
     if posted:
@@ -307,7 +312,8 @@ async def going_live(request: Request) -> dict:
 
     gif_query = await _gif_search_query(f"Pick a GIF search term for a Twitch going-live announcement. Stream: '{stream_title}', category: '{category}'")
     gif_url = await _fetch_gif(gif_query.strip())
-    message = announcement + (f"\n{gif_url}" if gif_url else "")
+    role_ping = f"<@&{DISCORD_STREAM_ROLE_ID}>\n" if DISCORD_STREAM_ROLE_ID else ""
+    message = role_ping + announcement + f"\nhttps://twitch.tv/{TWITCH_CHANNEL}" + (f"\n{gif_url}" if gif_url else "")
 
     await _post_to_announce(message)
     return {"status": "ok"}

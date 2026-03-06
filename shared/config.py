@@ -57,6 +57,10 @@ _announce_id = os.getenv("DISCORD_ANNOUNCE_CHANNEL_ID", "")
 DISCORD_ANNOUNCE_CHANNEL_ID: int | None = int(_announce_id) if _announce_id else None
 DISCORD_BOT_WEBHOOK_PORT = int(os.getenv("DISCORD_BOT_WEBHOOK_PORT", "8002"))
 DISCORD_BOT_WEBHOOK_URL = os.getenv("DISCORD_BOT_WEBHOOK_URL", "http://127.0.0.1:8002")
+_event_role_id = os.getenv("DISCORD_EVENT_ROLE_ID", "")
+DISCORD_EVENT_ROLE_ID: int | None = int(_event_role_id) if _event_role_id else None
+_stream_role_id = os.getenv("DISCORD_STREAM_ROLE_ID", "")
+DISCORD_STREAM_ROLE_ID: int | None = int(_stream_role_id) if _stream_role_id else None
 
 # ── OMDb API ───────────────────────────────────────────────────────────────
 OMDB_API_KEY = os.getenv("OMDB_API_KEY", "")
