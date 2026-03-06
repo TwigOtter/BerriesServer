@@ -102,58 +102,6 @@ def _preprocess_message(speaker: str, text: str) -> str | None:
     return f"[{speaker}]: {text}"
 
 
-def _format_stream_event(event_type: str, body: dict) -> str | None:
-    """
-    Convert a generic Twitch event into a human-readable line for the buffer.
-    Returns None if the event type is unknown/unhandled.
-    """
-    match event_type:
-        case "subscription":
-            user = body.get("username", "Someone")
-            tier = body.get("tier", 1)
-            months = body.get("months", 1)
-            return f"[StreamEvent]: {user} subscribed at Tier {tier} for {months} month(s)!"
-        case "gift_sub":
-            gifter = body.get("gifter", "Anonymous")
-            recipient = body.get("recipient", "someone")
-            tier = body.get("tier", 1)
-            return f"[StreamEvent]: {gifter} gifted a Tier {tier} sub to {recipient}!"
-        case "bits":
-            user = body.get("username", "Someone")
-            amount = body.get("amount", 0)
-            return f"[StreamEvent]: {user} cheered {amount} bits!"
-        case "raid":
-            channel = body.get("from_channel", "someone")
-            count = body.get("viewer_count", 0)
-            return f"[StreamEvent]: {channel} raided with {count} viewer(s)!"
-        case "first_time_chatter":
-            user = body.get("username", "someone")
-            return f"[StreamEvent]: {user} chatted for the first time!"
-        case "prediction_start":
-            title = body.get("title", "?")
-            outcomes = body.get("outcomes", [])
-            opts = " / ".join(outcomes)
-            return f"[StreamEvent]: Prediction started — \"{title}\" ({opts})"
-        case "prediction_lock":
-            title = body.get("title", "?")
-            return f"[StreamEvent]: Prediction locked — \"{title}\""
-        case "prediction_result":
-            title = body.get("title", "?")
-            winner = body.get("winner", "?")
-            points = body.get("total_points", 0)
-            return f"[StreamEvent]: Prediction ended — \"{title}\" — winner: {winner} ({points:,} points wagered)"
-        case "poll_start":
-            title = body.get("title", "?")
-            choices = body.get("choices", [])
-            opts = " / ".join(choices)
-            return f"[StreamEvent]: Poll started — \"{title}\" ({opts})"
-        case "poll_end":
-            title = body.get("title", "?")
-            winner = body.get("winner", "?")
-            return f"[StreamEvent]: Poll ended — \"{title}\" — winner: {winner}"
-        case _:
-            return None
-
 
 def _buffer_text() -> str:
     return "\n".join(e["text"] for e in _buffer)
@@ -234,14 +182,6 @@ async def _flush_timer_loop() -> None:
         await asyncio.sleep(10)  # check every 10 seconds
         if _buffer and (time.time() - _last_event_time) >= CHUNK_TIMEOUT_SEC:
             await _flush_buffer(reason="timeout")
-
-
-@app.on_event("startup")
-async def startup() -> None:
-    from shared.user_db import init_db
-    USERS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    init_db()
-    asyncio.create_task(_flush_timer_loop())
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────
@@ -363,34 +303,33 @@ async def receive_stream_event(
 ) -> dict:
     """
     Receive a generic Twitch event from Streamer.bot.
-    Raids, subscriptions, gift subs, bits, predictions, polls, first-time
-    chatters, and any other event Streamer.bot can capture all flow here.
+    Streamer.bot pre-formats the human-readable description — this endpoint
+    just buffers it alongside chat and speech.
 
-    Expected body: {"type": "<event_type>", ...event-specific fields}
-
-    Supported types: subscription, gift_sub, bits, raid, first_time_chatter,
-                     prediction_start, prediction_lock, prediction_result,
-                     poll_start, poll_end
+    Expected body:
+        {"type": "subscription", "text": "viewer123 just subscribed at Tier 1 for 3 months!"}
+        {"type": "raid", "text": "SomeStreamer raided with 42 viewers!"}
+        {"type": "prediction", "text": "Prediction started: 'Will Twig beat this level?' Yes | No"}
     """
     global _last_event_time
 
     _auth_check(x_secret)
     body = await request.json()
 
-    event_type = body.get("type", "")
-    line = _format_stream_event(event_type, body)
+    event_type = body.get("type", "stream_event")
+    text = body.get("text", "").strip()
 
-    if line is None:
-        print(f"[ingest_api] /event/stream — unhandled type: {event_type!r}")
-        return {"status": "unhandled", "type": event_type}
+    if not text:
+        return {"status": "dropped", "reason": "empty text"}
 
+    line = f"[StreamEvent]: {text}"
     _buffer.append({"speaker": "StreamEvent", "text": line, "timestamp": time.time()})
     _last_event_time = time.time()
 
     if _buffer_token_count() >= CHUNK_TOKEN_LIMIT:
         await _flush_buffer(reason="token_limit")
 
-    print(f"[ingest_api] /event/stream — {line}")
+    print(f"[ingest_api] /event/stream ({event_type}) — {line}")
     return {"status": "ok"}
 
 
