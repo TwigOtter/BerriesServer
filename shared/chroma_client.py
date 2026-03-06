@@ -13,7 +13,7 @@ Usage:
 
 import chromadb
 from chromadb.utils import embedding_functions
-from shared.config import CHROMADB_DIR, CHROMA_COLLECTION, EMBEDDING_MODEL
+from shared.config import CHROMADB_DIR, CHROMA_COLLECTION, DATA_DIR, EMBEDDING_MODEL
 
 _client: chromadb.ClientAPI | None = None
 _collection = None
@@ -30,8 +30,11 @@ def get_collection():
     global _collection
     if _collection is None:
         client = get_client()
+        hf_cache = DATA_DIR / "huggingface"
+        hf_cache.mkdir(exist_ok=True)
         ef = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=EMBEDDING_MODEL
+            model_name=EMBEDDING_MODEL,
+            cache_folder=str(hf_cache),
         )
         _collection = client.get_or_create_collection(
             name=CHROMA_COLLECTION,
