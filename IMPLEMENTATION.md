@@ -66,7 +66,11 @@ Bot code is complete. These manual steps remain:
 
 ---
 
-## TODO: Fix git push credentials
+## Changelog
+
+### 2026-03-06
+
+#### DONE: Fix git push credentials
 
 The repo remote is now set to SSH (`git@github.com:TwigOtter/BerriesServer.git`) but
 `core.sshCommand` is hardcoded to `/opt/berries_ssh/id_ed25519` (a read-only deploy key
@@ -88,8 +92,6 @@ owned by `berries`). `twig` can't read it and `berries` can't write with it.
 After that, `git push` as `twig` will work without any prompts.
 
 ---
-
-## Changelog
 
 ### 2026-03-05
 
