@@ -14,7 +14,7 @@ AI chatbot powering **Berries**, a spooky forest demon who responds in Twitch ch
      | HTTP POST (chat, speech, stream events, mentions)
      v
 [ingest_api]  ── FastAPI, port 8000
-     |── writes ──────> data/transcripts/YYYY-MM-DD.jsonl   (ground truth)
+     |── writes ──────> data/transcripts/YYYY-MM-DD.jsonl    (ground truth)
      |── embeds ──────> data/chromadb/                       (semantic index)
      |── caches ──────> deque(maxlen=2)                      (short-term memory)
      |── upserts ─────> data/users.db                        (user profiles)

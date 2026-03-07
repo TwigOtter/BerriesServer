@@ -64,7 +64,7 @@ async def lifespan(_app):
 app = FastAPI(title="Berries Ingest API", lifespan=lifespan)
 
 # ── In-memory state ────────────────────────────────────────────────────────
-# Each entry: {"speaker": str, "text": str, "timestamp": float}
+# Each entry: {"source": str, "text": str, "timestamp": float}
 _buffer: list[dict] = []
 _last_event_time: float = time.time()
 
@@ -86,7 +86,7 @@ def _auth_check(x_secret: str | None) -> None:
         raise HTTPException(status_code=403, detail="Forbidden")
 
 
-def _preprocess_message(speaker: str, text: str) -> str | None:
+def _preprocess_message(source: str, text: str) -> str | None:
     """
     Clean a single message before buffering.
     Returns None if the message should be dropped entirely.
@@ -100,7 +100,7 @@ def _preprocess_message(speaker: str, text: str) -> str | None:
     # TODO: condense emote spam — e.g. "PogChamp PogChamp PogChamp" → "PogChamp_x3"
     # TODO: add more noise filters as patterns emerge from real transcripts
 
-    return f"[{speaker}]: {text}"
+    return f"[{source}]: {text}"
 
 
 
@@ -130,7 +130,7 @@ async def _flush_buffer(reason: str) -> None:
     end_ts = datetime.fromtimestamp(_buffer[-1]["timestamp"], tz=timezone.utc).isoformat()
     text = _buffer_text()
     token_count = count_tokens(text)
-    speakers = list(dict.fromkeys(e["speaker"] for e in _buffer))  # ordered unique
+    sources = list(dict.fromkeys(e["source"] for e in _buffer))  # ordered unique
 
     chunk = {
         "chunk_id": chunk_id,
@@ -142,7 +142,7 @@ async def _flush_buffer(reason: str) -> None:
         "flush_reason": reason,
         "text": text,
         "token_count": token_count,
-        "speaker_summary": speakers,
+        "source_summary": sources,
     }
 
     # 1. Write to .jsonl (ground truth first)
@@ -224,7 +224,7 @@ async def receive_chat(
     if cleaned is None:
         return {"status": "dropped"}
 
-    _buffer.append({"speaker": username, "text": cleaned, "timestamp": time.time()})
+    _buffer.append({"source": username, "text": cleaned, "timestamp": time.time()})
     _last_event_time = time.time()
     _session_chatters.add(username)
 
@@ -265,7 +265,7 @@ async def receive_speech(
     if cleaned is None:
         return {"status": "dropped"}
 
-    _buffer.append({"speaker": body.get("speaker", "Unknown"), "text": cleaned, "timestamp": time.time()})
+    _buffer.append({"source": body.get("speaker", "Unknown"), "text": cleaned, "timestamp": time.time()})
     _last_event_time = time.time()
 
     if _buffer_token_count() >= CHUNK_TOKEN_LIMIT:
@@ -324,7 +324,7 @@ async def receive_stream_event(
         return {"status": "dropped", "reason": "empty text"}
 
     line = f"[StreamEvent]: {text}"
-    _buffer.append({"speaker": "StreamEvent", "text": line, "timestamp": time.time()})
+    _buffer.append({"source": "StreamEvent", "text": line, "timestamp": time.time()})
     _last_event_time = time.time()
 
     if _buffer_token_count() >= CHUNK_TOKEN_LIMIT:
