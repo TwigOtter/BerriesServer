@@ -27,6 +27,8 @@ Changelog, roadmap, and decisions. Updated at the end of each work session.
 - [ ] ChromaDB rebuild utility — script to reconstruct the index from `.jsonl` ground truth files
 - [ ] TTS routing — when `TTS: true`, route Berries' response to SpeakerBot via a dedicated Streamer.bot action
 - [ ] `berries_bot` as a standalone service — currently the response pipeline lives inside `ingest_api`; may be worth extracting once things stabilize
+- [ ] **`embed_docs.py` — manual document embedding script** — drop `.txt`/`.md` files into `data/embed-inbox/`, run the script; it chunks each file, embeds into ChromaDB with `{"source": "document"}` metadata, then moves the file to `data/embed-archive/`. Designed to run on demand, not as a watcher. Use case: lore, story writing, reference docs Berries should be able to draw from.
+- [ ] **Discord message embedding** — optional future path: write select Discord channel messages into ChromaDB with `{"source": "discord"}` metadata, giving Berries community context beyond stream transcripts. Disabled by default; would need a flag or separate script to enable.
 
 ---
 
@@ -63,6 +65,8 @@ Bot code is complete. These manual steps remain:
 | `/event/stream` uses pre-formatted `text` field | Streamer.bot has native string templating and direct access to event variables — no need to re-implement formatting in Python |
 | `users.db` separate from transcript chunks | User profiles are relational and long-lived; chunks are append-only time-series — different access patterns |
 | ChromaDB rebuilt from `.jsonl` if needed | Ground truth lives in flat files; ChromaDB is a derived index, never the source of truth |
+| ChromaDB metadata is additive, not enforced | ChromaDB is schema-less — new fields can be added to new documents freely without touching old ones. Old stream chunks won't have `source` set; that's fine for unfiltered queries. Only add a backfill step if you specifically need to filter on a field across all historical data. Rule: add fields freely, never rename or remove them. |
+| `source` metadata field planned but not yet on stream chunks | Current stream chunks don't include `source`; future document and Discord embeds will use `{"source": "document"}` / `{"source": "discord"}`. Stream chunks can be backfilled via the rebuild utility when needed — no urgency since unfiltered queries still work correctly. |
 
 ---
 
