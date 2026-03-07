@@ -2,10 +2,8 @@
 .env
 
 # ── Runtime data (generated, not source) ──────────────────────────────────
-data/transcripts/*.jsonl
-data/chromadb/
-data/stream_utils.db
-logs/
+data/*
+logs/*
 
 # ── Python ─────────────────────────────────────────────────────────────────
 __pycache__/
