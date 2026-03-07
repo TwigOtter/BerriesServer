@@ -95,6 +95,16 @@ def get_all_watched() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def remove_suggestion(imdb_id: str) -> bool:
+    """Delete a suggested movie by IMDB ID. Returns True if a row was deleted."""
+    with _connect() as conn:
+        cursor = conn.execute(
+            "DELETE FROM movies WHERE imdb_id = ? AND status = 'suggested'", (imdb_id,)
+        )
+        conn.commit()
+    return cursor.rowcount > 0
+
+
 def mark_watched(imdb_id: str) -> None:
     """Set a movie's status to 'watched' and record the timestamp."""
     now = datetime.now(timezone.utc).isoformat()
