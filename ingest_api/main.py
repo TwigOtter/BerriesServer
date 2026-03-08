@@ -86,10 +86,27 @@ def _auth_check(x_secret: str | None) -> None:
         raise HTTPException(status_code=403, detail="Forbidden")
 
 
-def _preprocess_message(source: str, text: str) -> str | None:
+def _safe_int(value, default: int = 0) -> int:
+    """Parse an int from a body field, returning default for missing/empty/unsubstituted values."""
+    try:
+        return int(value or default)
+    except (ValueError, TypeError):
+        return default
+
+
+def _preprocess_message(
+    source: str,
+    text: str,
+    text_stripped: str = "",
+    emote_count: int = 0,
+) -> str | None:
     """
     Clean a single message before buffering.
     Returns None if the message should be dropped entirely.
+
+    If emote_count > 0 and text_stripped is provided, emote tokens are identified
+    by diffing the original message against the stripped version, then consecutive
+    repeated emotes are condensed: "PogChamp PogChamp PogChamp" → "PogChamp x3".
     """
     text = text.strip()
 
@@ -97,7 +114,25 @@ def _preprocess_message(source: str, text: str) -> str | None:
     if len(text) <= 1 or text.startswith("!"):
         return None
 
-    # TODO: condense emote spam — e.g. "PogChamp PogChamp PogChamp" → "PogChamp_x3"
+    if emote_count > 0 and text_stripped:
+        stripped_words = set(text_stripped.split())
+        words = text.split()
+        result = []
+        i = 0
+        while i < len(words):
+            word = words[i]
+            if word not in stripped_words:
+                # Emote token — count consecutive identical repeats
+                count = 1
+                while i + count < len(words) and words[i + count] == word:
+                    count += 1
+                result.append(f"{word} x{count}" if count > 1 else word)
+                i += count
+            else:
+                result.append(word)
+                i += 1
+        text = " ".join(result)
+
     # TODO: add more noise filters as patterns emerge from real transcripts
 
     return f"[{source}]: {text}"
@@ -187,6 +222,10 @@ async def _flush_timer_loop() -> None:
 
 # ── Routes ─────────────────────────────────────────────────────────────────
 
+# Role values from Streamer.bot: 1=Viewer, 2=VIP, 3=Moderator, 4=Broadcaster
+_ROLE_LABELS = {"1": "Viewer", "2": "VIP", "3": "Moderator", "4": "Broadcaster"}
+
+
 @app.post("/event/chat")
 async def receive_chat(
     request: Request,
@@ -197,30 +236,65 @@ async def receive_chat(
 
     Expected body:
         {
-            "username": "chatter123",
-            "display_name": "Chatter123",
-            "message": "hello berries!",
-            "subscription_tier": 1,
-            "subscription_months": 3,
-            "gift_sub_count": 0,
-            "is_moderator": false
+            "userName": "chatter123",
+            "displayName": "Chatter123",
+            "userId": "424960237",
+            "msgId": "a126e8a8-43f7-4a14-8990-e8c3feea76d8",
+            "message": "hello berries! PogChamp PogChamp",
+            "messageStripped": "hello berries!",
+            "emoteCount": "2",
+            "role": "1",
+            "bits": "0",
+            "firstMessage": "false",
+            "isSubscribed": "false",
+            "subscriptionTier": "",
+            "monthsSubscribed": "0",
+            "isVip": "false",
+            "isModerator": "false"
         }
 
-    subscription_tier: 0=none, 1=Tier1, 2=Tier2, 3=Tier3
+    role: "1"=Viewer, "2"=VIP, "3"=Moderator, "4"=Broadcaster
+    subscriptionTier: 1000=T1, 2000=T2, 3000=T3 (empty string when not subscribed)
     """
     global _last_event_time
 
     _auth_check(x_secret)
     body = await request.json()
 
-    username = body.get("username", "unknown")
-    display_name = body.get("display_name") or username
+    username = body.get("userName", "unknown")
+    display_name = body.get("displayName") or username
+    user_id = body.get("userId", "")
+    msg_id = body.get("msgId", "")
     raw_text = body.get("message", "")
-    sub_tier = int(body.get("subscription_tier", 0))
-    sub_months = int(body.get("subscription_months", 0))
-    gift_subs = int(body.get("gift_sub_count", 0))
+    text_stripped = body.get("messageStripped", "")
+    emote_count = _safe_int(body.get("emoteCount"))
+    role = str(body.get("role", "1"))
+    role_label = _ROLE_LABELS.get(role, "Viewer")
+    bits = _safe_int(body.get("bits"))
+    first_message = str(body.get("firstMessage", "false")).lower() == "true"
+    is_subscribed = str(body.get("isSubscribed", "false")).lower() == "true"
+    is_vip = str(body.get("isVip", "false")).lower() == "true"
+    is_moderator = str(body.get("isModerator", "false")).lower() == "true"
 
-    cleaned = _preprocess_message(username, raw_text)
+    # subscriptionTier is 1000/2000/3000 from Streamer.bot; only present when subscribed
+    sub_tier = {1000: 1, 2000: 2, 3000: 3}.get(_safe_int(body.get("subscriptionTier")), 0)
+    sub_months = _safe_int(body.get("monthsSubscribed"))
+
+    # msg_id retained for future direct-reply support
+    flags = [role_label]
+    if is_subscribed:
+        flags.append(f"sub T{sub_tier}/{sub_months}mo")
+    if is_vip:
+        flags.append("VIP")
+    if is_moderator:
+        flags.append("mod")
+    if first_message:
+        flags.append("first!")
+    if bits:
+        flags.append(f"{bits} bits")
+    print(f"[ingest_api] /event/chat — {username} ({user_id}) [{', '.join(flags)}]: {raw_text!r}")
+
+    cleaned = _preprocess_message(username, raw_text, text_stripped, emote_count)
     if cleaned is None:
         return {"status": "dropped"}
 
@@ -235,7 +309,6 @@ async def receive_chat(
         display_name=display_name,
         subscription_tier=sub_tier,
         subscription_months=sub_months,
-        gift_sub_count=gift_subs,
     )
 
     if _buffer_token_count() >= CHUNK_TOKEN_LIMIT:
