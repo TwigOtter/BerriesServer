@@ -113,10 +113,37 @@ def _get_chroma_context(query: str) -> str:
         docs = results.get("documents", [[]])[0]
         log.debug("ChromaDB returned %d doc(s) for query: %.80r", len(docs), query)
         if docs:
-            return "=== RELEVANT PAST STREAM CONTEXT ===\n" + "\n\n".join(docs)
+            return (
+                "RELEVANT PAST CONTEXT:\n"
+                "The following excerpts from past stream logs may be relevant to the conversation. "
+                "Use them to inform your response if helpful — do not quote them directly.\n"
+                + "\n---\n".join(docs)
+            )
     except Exception:
         log.exception("ChromaDB query failed")
     return ""
+
+
+async def _get_channel_history(channel: discord.TextChannel, before: discord.Message, limit: int = 20) -> str:
+    """Fetch the last `limit` messages from `channel` before `message` and format them."""
+    try:
+        messages = [m async for m in channel.history(limit=limit, before=before)]
+        messages.reverse()
+        lines = [
+            f"{m.author.display_name}: {m.content}"
+            for m in messages
+            if m.content
+        ]
+        if not lines:
+            return ""
+        return (
+            "=== RECENT CHANNEL MESSAGES ===\n"
+            "Here are the most recent messages in the channel, which may help you provide context and continuity to your response:\n"
+            + "\n".join(lines)
+        )
+    except Exception:
+        log.exception("Failed to fetch channel history for channel %s", channel.id)
+        return ""
 
 
 async def _llm(user_message: str, system_suffix: str = "") -> str:
@@ -248,7 +275,12 @@ async def on_message(message: discord.Message) -> None:
     try:
         async with message.channel.typing():
             context = _get_chroma_context(content)
-            system_prompt = _load_personality() + (f"\n\n{context}" if context else "")
+            history = await _get_channel_history(message.channel, before=message)
+            system_prompt = _load_personality()
+            if context:
+                system_prompt += f"\n\n{context}"
+            if history:
+                system_prompt += f"\n\n{history}"
             user_message = f"{message.author.display_name}: {content}"
             log.debug("Calling LLM for on_message")
             response = await get_completion(system_prompt=system_prompt, user_message=user_message)
@@ -370,8 +402,8 @@ async def past_movies(interaction: discord.Interaction) -> None:
 
 @bot.tree.command(name="movie-time", description="Announce tonight's movie and mark it as watched")
 @app_commands.default_permissions(manage_messages=True)
-@app_commands.describe(title="Movie title to announce")
-async def movie_time(interaction: discord.Interaction, title: str) -> None:
+@app_commands.describe(title="Movie title to announce", notes="Optional notes from Twig about this movie")
+async def movie_time(interaction: discord.Interaction, title: str, notes: str = "") -> None:
     await interaction.response.defer()
 
     result = await _omdb_search(title)
@@ -383,12 +415,16 @@ async def movie_time(interaction: discord.Interaction, title: str) -> None:
     movie_title = result["Title"]
     year = result["Year"]
 
-    announcement = await _llm(
-        f"Tonight's movie night movie is: {movie_title} ({year})."
-        f"Write a short in-character announcement for the Discord server."
-        f"Give your genuine reaction to this movie choice and hype people up to join either in VRChat or in the Discord stream."
+    prompt = (
+        f"Tonight's movie night movie is: {movie_title} ({year}). "
+        f"Write a short in-character announcement for the Discord server. "
+        f"Give your genuine reaction to this movie choice and hype people up to join either in VRChat or in the Discord stream. "
         f"2-3 sentences, stay in character."
     )
+    if notes:
+        prompt += f" Additional notes about this movie from Twig: {notes}"
+
+    announcement = await _llm(prompt)
 
     # Ensure the movie exists in the DB before marking watched
     if not get_suggestion(imdb_id):
