@@ -463,6 +463,8 @@ async def _generate_response(text: str) -> str:
     Build context and call the LLM to generate Berries' response.
     Injects short-term memory (recent deque chunks) and long-term memory
     (semantically relevant past chunks from ChromaDB) into the system prompt.
+    The caller is responsible for fully forming the user message text, including
+    any viewer context such as nicknames or first-time welcome framing.
     """
     from shared.llm_client import get_completion
 
@@ -475,36 +477,43 @@ async def _generate_response(text: str) -> str:
         docs = results.get("documents", [[]])[0]
         if docs:
             context_block = "\n---\n".join(docs)
-            system_prompt += f"\n\nRELEVANT PAST CONTEXT:\n{context_block}"
+            system_prompt += (
+                "\n\nRELEVANT PAST CONTEXT:\n"
+                "The following excerpts from past stream logs may be relevant to the viewer's message. "
+                "Use them to inform your response if helpful — do not quote them directly.\n"
+                + context_block
+            )
     except Exception as e:
         print(f"[ingest_api] ChromaDB query failed (no context injected): {e}")
 
     # Short-term memory: last 2 chunks from current session
     if recent_chunks:
         recent_text = "\n---\n".join(c["text"] for c in recent_chunks)
-        system_prompt += f"\n\nRECENT CONVERSATION:\n{recent_text}"
+        system_prompt += (
+            "\n\nRECENT CONVERSATION:\n"
+            "The most recent chat activity from this stream, for continuity:\n"
+            + recent_text
+        )
 
     return await get_completion(system_prompt=system_prompt, user_message=text)
 
 
-async def _post_to_streamerbot(message: str, post_to_chat: bool = True, tts: bool = False) -> None:
+async def _post_to_streamerbot(message: str, chat: bool = False, tts: bool = False) -> None:
     """
     POST Berries' response back to Streamer.bot.
-    Streamer.bot reads %request.body.message%, %request.body.postToChat%, %request.body.TTS%.
-
-    TODO: Route TTS responses to SpeakerBot via a separate Streamer.bot action
-          once TTS pipeline is configured.
+    Streamer.bot reads %request.body.message%, %request.body.CHAT%, %request.body.TTS%
+    and uses them to decide which actions to trigger.
     """
     payload = {
         "message": message,
-        "postToChat": post_to_chat,
+        "CHAT": chat,
         "TTS": tts,
     }
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(STREAMERBOT_CALLBACK_URL, json=payload, timeout=5.0)
             resp.raise_for_status()
-        print(f"[ingest_api] Posted to Streamer.bot: {message!r} (TTS={tts})")
+        print(f"[ingest_api] Posted to Streamer.bot: {message!r} (CHAT={chat}, TTS={tts})")
     except Exception as e:
         print(f"[ingest_api] Failed to reach Streamer.bot at {STREAMERBOT_CALLBACK_URL}: {e}")
 
@@ -520,8 +529,8 @@ async def receive_mention(
 
     Expected body:
         {
-            "text": "[SomeUsername] Hey Berries, what's Twig's favorite game?",
-            "respond": true,
+            "text": "A viewer named Missoula (username: the_detective, call them "Missoula") says: {Hey Berries, what's Twig's favorite game?} Please respond directly to them.",
+            "CHAT": false,
             "TTS": false,
             "log": true
         }
@@ -529,29 +538,28 @@ async def receive_mention(
     Test with:
         Invoke-RestMethod -Uri "http://localhost:8000/event/mention" -Method POST `
             -ContentType "application/json" `
-            -Body '{"text": "[ChatUser] hey Berries, what do you think about mushrooms?", "respond": true, "TTS": false}'
+            -Body '{"text": "hey Berries, what do you think about mushrooms?", "CHAT": true, "TTS": false}'
 
     TODO: when log=false, skip writing text to transcript and ChromaDB.
-    TODO: per-user context injection from users.db (sub tier, nickname, follow date, etc.)
     """
     _auth_check(x_secret)
     body = await request.json()
 
     text = body.get("text", "")
-    should_respond = body.get("respond", True)
+    chat = body.get("CHAT", False)
     tts = body.get("TTS", False)
     # log = body.get("log", True)  # TODO: use to suppress transcript writes
 
-    print(f"[ingest_api] /event/mention — text={text!r} respond={should_respond} TTS={tts}")
+    print(f"[ingest_api] /event/mention — text={text!r} CHAT={chat} TTS={tts}")
 
-    if not should_respond or not text:
+    if not text:
         return {"status": "ok", "triggered": False}
 
     response_text = await _generate_response(text)
-    await _post_to_streamerbot(response_text, post_to_chat=True, tts=tts)
+    await _post_to_streamerbot(response_text, chat=chat, tts=tts)
 
     return {
         "message": response_text,
-        "postToChat": True,
+        "CHAT": chat,
         "TTS": tts,
     }
