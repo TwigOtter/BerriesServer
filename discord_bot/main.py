@@ -161,6 +161,7 @@ async def _gif_search_query(context: str) -> str:
 
 async def _fetch_gif(query: str) -> str | None:
     """Search Giphy and return a random GIF URL from the top results."""
+    log.debug("Fetching GIF for query: %.80r", query)
     if not GIPHY_API_KEY:
         log.debug("GIPHY_API_KEY not set; skipping GIF search")
         return None
@@ -395,7 +396,6 @@ async def movie_time(interaction: discord.Interaction, title: str) -> None:
     mark_watched(imdb_id)
 
     gif_query = await _gif_search_query(f"Pick a GIF search term for a movie night announcement about: {movie_title} ({year})")
-    print(f"[discord_bot] GIF search query for {movie_title!r}: {gif_query!r}")
     gif_url = await _fetch_gif(gif_query.strip())
     role_ping = f"<@&{DISCORD_EVENT_ROLE_ID}>\n" if DISCORD_EVENT_ROLE_ID else ""
     message = f"# {movie_title} ({year})\n" + role_ping + announcement
