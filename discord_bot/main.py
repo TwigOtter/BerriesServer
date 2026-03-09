@@ -383,9 +383,9 @@ async def movie_time(interaction: discord.Interaction, title: str) -> None:
     year = result["Year"]
 
     announcement = await _llm(
-        f"Tonight's movie night movie is: {movie_title} ({year}). "
-        f"Write a short in-character announcement for the Discord server. "
-        f"Give your genuine reaction to this movie choice and hype people up to join. "
+        f"Tonight's movie night movie is: {movie_title} ({year})."
+        f"Write a short in-character announcement for the Discord server."
+        f"Give your genuine reaction to this movie choice and hype people up to join either in VRChat or in the Discord stream."
         f"2-3 sentences, stay in character."
     )
 
@@ -395,17 +395,22 @@ async def movie_time(interaction: discord.Interaction, title: str) -> None:
     mark_watched(imdb_id)
 
     gif_query = await _gif_search_query(f"Pick a GIF search term for a movie night announcement about: {movie_title} ({year})")
+    print(f"[discord_bot] GIF search query for {movie_title!r}: {gif_query!r}")
     gif_url = await _fetch_gif(gif_query.strip())
     role_ping = f"<@&{DISCORD_EVENT_ROLE_ID}>\n" if DISCORD_EVENT_ROLE_ID else ""
-    message = role_ping + announcement + (f"\n{gif_url}" if gif_url else "")
+    message = f"# {movie_title} ({year})\n" + role_ping + announcement
 
     posted = await _post_to_announce(message)
     if posted:
+        if gif_url:
+            channel = bot.get_channel(DISCORD_ANNOUNCE_CHANNEL_ID)
+            if channel:
+                await channel.send(gif_url)
         await interaction.followup.send(
             f"Announced **{movie_title}** in <#{DISCORD_ANNOUNCE_CHANNEL_ID}> and marked as watched!"
         )
     else:
-        await interaction.followup.send(message)
+        await interaction.followup.send(message + (f"\n{gif_url}" if gif_url else ""))
 
 
 # ── Webhook handlers ───────────────────────────────────────────────────────
@@ -427,9 +432,13 @@ async def going_live(request: Request) -> dict:
     gif_query = await _gif_search_query(f"Pick a GIF search term for a Twitch going-live announcement. Stream: '{stream_title}', category: '{category}'")
     gif_url = await _fetch_gif(gif_query.strip())
     role_ping = f"<@&{DISCORD_STREAM_ROLE_ID}>\n" if DISCORD_STREAM_ROLE_ID else ""
-    message = role_ping + announcement + f"\nhttps://twitch.tv/{TWITCH_CHANNEL}" + (f"\n{gif_url}" if gif_url else "")
+    message = role_ping + announcement + f"\nhttps://twitch.tv/{TWITCH_CHANNEL}"
 
     await _post_to_announce(message)
+    if gif_url:
+        channel = bot.get_channel(DISCORD_ANNOUNCE_CHANNEL_ID)
+        if channel:
+            await channel.send(gif_url)
     return {"status": "ok"}
 
 
