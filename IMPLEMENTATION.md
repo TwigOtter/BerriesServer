@@ -11,8 +11,8 @@ Changelog, roadmap, and decisions. Updated at the end of each work session.
 - [x] Configure Streamer.bot actions to POST all events to `ingest_api` with correct payloads
 
 ### Soon
-- [ ] Restructure movie commands as a Discord subcommand group — `/movie suggest add`, `/movie suggest remove`, `/movie suggest list`, `/movie announce` (replaces `/movie-time`; fires LLM announcement + role ping + Giphy GIF + marks watched), `/movie history list`, `/movie history remove` (mod-only). `/movie announce` sits as a top-level subcommand alongside the `suggest` and `history` subcommand groups, which is valid in Discord's API.
-- [ ] `/movie suggest add` disambiguation — OMDb search returns multiple results; instead of picking the first match, present the user with a numbered list of up to 5 candidates and prompt them to reply with 1–5 (or "cancel"). Also consider a standalone `/movie search <query>` command that returns candidate titles with their IMDB links so users can confirm the right film before suggesting it. — OMDb search returns multiple results; instead of picking the first match, present the user with a numbered list of up to 5 candidates and prompt them to reply with 1–5 (or "cancel"). Also consider a standalone `/search-movies <query>` command that returns candidate titles with their IMDB links so users can confirm the right film before suggesting it.
+- [x] Restructure movie commands as a Discord subcommand group — `/movie suggest add`, `/movie suggest remove`, `/movie suggest list`, `/movie announce` (replaces `/movie-time`; fires LLM announcement + role ping + Giphy GIF + marks watched), `/movie history list`, `/movie history remove` (mod-only). `/movie announce` sits as a top-level subcommand alongside the `suggest` and `history` subcommand groups, which is valid in Discord's API.
+- [x] `/movie suggest add` disambiguation — OMDb search returns multiple results; instead of picking the first match, present the user with a numbered list of up to 5 candidates and prompt them to reply with 1–5 (or "cancel"). Also consider a standalone `/movie search <query>` command that returns candidate titles with their IMDB links so users can confirm the right film before suggesting it. — OMDb search returns multiple results; instead of picking the first match, present the user with a numbered list of up to 5 candidates and prompt them to reply with 1–5 (or "cancel"). Also consider a standalone `/search-movies <query>` command that returns candidate titles with their IMDB links so users can confirm the right film before suggesting it.
 - [ ] Add logging to `discord_bot` — currently no structured log output; add file-based logging (rotating, to `logs/`) covering slash command usage, announce posts, going-live events, GIF fetch failures, and @mention responses
 - [ ] Per-user context injection — on `/event/mention`, pull the user's `users.db` record and append relevant fields (nickname, sub tier, etc.) to the system prompt
 - [ ] `log: false` flag — when Streamer.bot sends `"log": false`, suppress JSONL + ChromaDB writes for semi-private exchanges
@@ -71,6 +71,32 @@ Bot code is complete. These manual steps remain:
 ---
 
 ## Changelog
+
+### 2026-03-09
+
+**`discord_bot/main.py` — `/movie suggest add` disambiguation**
+- Added `_omdb_search_many(title, limit=5)` helper; `_omdb_search` now delegates to it
+- Added `MovieSelectView` — ephemeral `discord.ui.View` with a select menu; only the invoking user sees or can interact with it; 60 s timeout
+- When OMDb returns multiple results, bot sends an ephemeral dropdown (up to 5 options + Cancel); user picks from the menu, no channel messages involved
+- Single-result searches skip the dropdown entirely
+- All error/cancel/timeout responses are ephemeral; only the final success posts publicly to the channel
+
+**`discord_bot/main.py` — Movie commands restructured as `/movie` subcommand group**
+- Replaced flat slash commands with a `movie` `app_commands.Group` containing `suggest` and `history` subgroups
+- `/suggest-movie` → `/movie suggest add`
+- `/suggested-movies` → `/movie suggest list`
+- `/remove-suggestion` → `/movie suggest remove` (mod-only)
+- `/movie-time` → `/movie announce` (mod-only)
+- `/past-movies` → `/movie history list`
+- `/movie history remove` — new mod-only command; removes a movie from watch history
+
+**`shared/movie_db.py`**
+- Added `remove_watched(imdb_id)` — deletes a watched movie from history; used by `/movie history remove`
+
+**Roadmap updates**
+- Marked "Restructure movie commands" as done
+
+---
 
 ### 2026-03-08
 

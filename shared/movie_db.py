@@ -114,3 +114,13 @@ def mark_watched(imdb_id: str) -> None:
             (now, imdb_id),
         )
         conn.commit()
+
+
+def remove_watched(imdb_id: str) -> bool:
+    """Delete a watched movie from history by IMDB ID. Returns True if a row was deleted."""
+    with _connect() as conn:
+        cursor = conn.execute(
+            "DELETE FROM movies WHERE imdb_id = ? AND status = 'watched'", (imdb_id,)
+        )
+        conn.commit()
+    return cursor.rowcount > 0

@@ -6,7 +6,7 @@ Discord bot for Berries' community server.
 Responsibilities:
   - Respond to @mentions anywhere in the server (RAG-backed)
   - Respond to regular messages in whitelisted channels (RAG-backed)
-  - Slash commands: /ping, /suggest-movie, /suggested-movies, /past-movies, /movie-time
+  - Slash commands: /ping, /movie suggest add|remove|list, /movie announce, /movie history list|remove
   - Webhook server (port 8002) for going-live events forwarded from ingest_api
 
 Run with:
@@ -50,6 +50,7 @@ from shared.movie_db import (
     init_movie_db,
     mark_watched,
     remove_suggestion,
+    remove_watched,
 )
 
 # ── Logging ────────────────────────────────────────────────────────────────
@@ -158,9 +159,15 @@ async def _llm(user_message: str, system_suffix: str = "") -> str:
 
 async def _omdb_search(title: str) -> dict | None:
     """Search OMDb for a movie by title. Returns the first result dict or None."""
+    results = await _omdb_search_many(title, limit=1)
+    return results[0] if results else None
+
+
+async def _omdb_search_many(title: str, limit: int = 5) -> list[dict]:
+    """Search OMDb for a movie by title. Returns up to `limit` result dicts."""
     if not OMDB_API_KEY:
         log.debug("OMDB_API_KEY not set; skipping OMDb search")
-        return None
+        return []
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.get(
@@ -170,12 +177,13 @@ async def _omdb_search(title: str) -> dict | None:
             )
         data = resp.json()
         if data.get("Response") == "True" and data.get("Search"):
-            log.debug("OMDb found %d result(s) for %r", len(data["Search"]), title)
-            return data["Search"][0]
+            results = data["Search"][:limit]
+            log.debug("OMDb found %d result(s) for %r (returning %d)", len(data["Search"]), title, len(results))
+            return results
         log.debug("OMDb returned no results for %r: %s", title, data.get("Error", "unknown"))
     except Exception:
         log.exception("OMDb search failed for %r", title)
-    return None
+    return []
 
 
 async def _gif_search_query(context: str) -> str:
@@ -297,6 +305,41 @@ async def on_message(message: discord.Message) -> None:
     await bot.process_commands(message)
 
 
+# ── Movie disambiguation UI ────────────────────────────────────────────────
+
+class MovieSelectView(discord.ui.View):
+    """Ephemeral dropdown for /movie suggest add disambiguation."""
+
+    def __init__(self, results: list[dict], invoker: discord.User | discord.Member) -> None:
+        super().__init__(timeout=60)
+        self.selected: dict | None = None
+        self.cancelled: bool = False
+        self._results = results
+        self._invoker = invoker
+
+        options = [
+            discord.SelectOption(label=f"{m['Title']} ({m['Year']})"[:100], value=str(i))
+            for i, m in enumerate(results)
+        ]
+        options.append(discord.SelectOption(label="Cancel", value="cancel"))
+
+        select = discord.ui.Select(placeholder="Pick a movie...", options=options)
+        select.callback = self._callback
+        self.add_item(select)
+
+    async def _callback(self, interaction: discord.Interaction) -> None:
+        if interaction.user != self._invoker:
+            await interaction.response.send_message("This isn't your selection.", ephemeral=True)
+            return
+        value = interaction.data["values"][0]
+        if value == "cancel":
+            self.cancelled = True
+        else:
+            self.selected = self._results[int(value)]
+        await interaction.response.defer()
+        self.stop()
+
+
 # ── Slash commands ─────────────────────────────────────────────────────────
 
 @bot.tree.command(name="ping", description="Check if Berries is lurking")
@@ -304,17 +347,51 @@ async def ping(interaction: discord.Interaction) -> None:
     await interaction.response.send_message("*stares from the shadows* ...yes, I am here. :3")
 
 
-@bot.tree.command(name="suggest-movie", description="Suggest a movie for movie night")
-@app_commands.describe(title="Movie title to search for")
-async def suggest_movie(interaction: discord.Interaction, title: str) -> None:
-    await interaction.response.defer()
+# ── /movie subcommand group ─────────────────────────────────────────────────
 
-    result = await _omdb_search(title)
-    if not result:
+movie_group = app_commands.Group(name="movie", description="Movie night commands")
+suggest_group = app_commands.Group(name="suggest", description="Manage movie suggestions", parent=movie_group)
+history_group = app_commands.Group(name="history", description="View and manage movie watch history", parent=movie_group)
+
+
+@suggest_group.command(name="add", description="Suggest a movie for movie night")
+@app_commands.describe(title="Movie title to search for")
+async def movie_suggest_add(interaction: discord.Interaction, title: str) -> None:
+    await interaction.response.defer(ephemeral=True)
+
+    results = await _omdb_search_many(title, limit=5)
+    if not results:
         await interaction.followup.send(
-            f"*rustles in the shadows* ...I couldn't find **{title}** on OMDb. Try a more specific title?"
+            f"*rustles in the shadows* ...I couldn't find **{title}** on OMDb. Try a more specific title?",
+            ephemeral=True,
         )
         return
+
+    # If multiple results, show an ephemeral dropdown — only the invoking user sees it
+    if len(results) > 1:
+        lines = [f"*Found a few matches for **{title}**. Which one did you mean?*\n"]
+        for i, m in enumerate(results, 1):
+            lines.append(f"{i}. **{m['Title']}** ({m['Year']})")
+
+        view = MovieSelectView(results, interaction.user)
+        await interaction.followup.send("\n".join(lines), view=view, ephemeral=True)
+        await view.wait()
+
+        if view.cancelled:
+            await interaction.followup.send(
+                "*retreats into the forest* ...alright, cancelled.", ephemeral=True
+            )
+            return
+        if view.selected is None:
+            await interaction.followup.send(
+                "*the shadows grow quiet* ...selection timed out. Run `/movie suggest add` again if you'd like to try.",
+                ephemeral=True,
+            )
+            return
+
+        result = view.selected
+    else:
+        result = results[0]
 
     imdb_id = result["imdbID"]
     movie_title = result["Title"]
@@ -322,7 +399,9 @@ async def suggest_movie(interaction: discord.Interaction, title: str) -> None:
 
     existing = get_suggestion(imdb_id)
     if existing and existing["status"] == "suggested":
-        await interaction.followup.send(f"**{movie_title} ({year})** is already on the suggestion list!")
+        await interaction.followup.send(
+            f"**{movie_title} ({year})** is already on the suggestion list!", ephemeral=True
+        )
         return
 
     recent = get_recent_watched(365)
@@ -333,15 +412,19 @@ async def suggest_movie(interaction: discord.Interaction, title: str) -> None:
             f"Someone just suggested '{movie_title} ({year})' for movie night, but we already watched it "
             f"on {watched_date} (less than a year ago). Reject the suggestion in-character — be playful. Keep it short."
         )
-        await interaction.followup.send(rejection)
+        await interaction.followup.send(rejection, ephemeral=True)
         return
 
     add_suggestion(imdb_id, movie_title, year, interaction.user.display_name)
-    await interaction.followup.send(f"Added **{movie_title} ({year})** to the movie night list!")
+    log.info("Added suggestion %r (%s) by %s", movie_title, imdb_id, interaction.user)
+    # Post public confirmation so the channel knows what was added
+    await interaction.channel.send(
+        f"**{interaction.user.display_name}** added **{movie_title} ({year})** to the movie night suggestion list!"
+    )
 
 
-@bot.tree.command(name="suggested-movies", description="See the current movie night suggestion list")
-async def suggested_movies(interaction: discord.Interaction) -> None:
+@suggest_group.command(name="list", description="See the current movie night suggestion list")
+async def movie_suggest_list(interaction: discord.Interaction) -> None:
     suggestions = get_all_suggestions()
     if not suggestions:
         await interaction.response.send_message(
@@ -355,10 +438,10 @@ async def suggested_movies(interaction: discord.Interaction) -> None:
     await interaction.response.send_message("\n".join(lines))
 
 
-@bot.tree.command(name="remove-suggestion", description="Remove a movie from the suggestion list")
+@suggest_group.command(name="remove", description="Remove a movie from the suggestion list")
 @app_commands.default_permissions(manage_messages=True)
 @app_commands.describe(title="Title of the movie to remove")
-async def remove_suggestion_cmd(interaction: discord.Interaction, title: str) -> None:
+async def movie_suggest_remove(interaction: discord.Interaction, title: str) -> None:
     await interaction.response.defer()
 
     result = await _omdb_search(title)
@@ -382,28 +465,10 @@ async def remove_suggestion_cmd(interaction: discord.Interaction, title: str) ->
         )
 
 
-@bot.tree.command(name="past-movies", description="See movies we've already watched")
-async def past_movies(interaction: discord.Interaction) -> None:
-    watched = get_all_watched()
-    if not watched:
-        await interaction.response.send_message(
-            "*tilts head* ...we haven't watched anything yet. Time to fix that."
-        )
-        return
-
-    lines = ["**Movies We've Watched**\n"]
-    for m in watched[:20]:
-        date = m["watched_at"][:10] if m["watched_at"] else "?"
-        lines.append(f"• **{m['title']}** ({m['year']}) — {date}")
-    if len(watched) > 20:
-        lines.append(f"\n*...and {len(watched) - 20} more*")
-    await interaction.response.send_message("\n".join(lines))
-
-
-@bot.tree.command(name="movie-time", description="Announce tonight's movie and mark it as watched")
+@movie_group.command(name="announce", description="Announce tonight's movie and mark it as watched")
 @app_commands.default_permissions(manage_messages=True)
 @app_commands.describe(title="Movie title to announce", notes="Optional notes from Twig about this movie")
-async def movie_time(interaction: discord.Interaction, title: str, notes: str = "") -> None:
+async def movie_announce(interaction: discord.Interaction, title: str, notes: str = "") -> None:
     await interaction.response.defer()
 
     result = await _omdb_search(title)
@@ -447,6 +512,54 @@ async def movie_time(interaction: discord.Interaction, title: str, notes: str = 
         )
     else:
         await interaction.followup.send(message + (f"\n{gif_url}" if gif_url else ""))
+
+
+@history_group.command(name="list", description="See movies we've already watched")
+async def movie_history_list(interaction: discord.Interaction) -> None:
+    watched = get_all_watched()
+    if not watched:
+        await interaction.response.send_message(
+            "*tilts head* ...we haven't watched anything yet. Time to fix that."
+        )
+        return
+
+    lines = ["**Movies We've Watched**\n"]
+    for m in watched[:20]:
+        date = m["watched_at"][:10] if m["watched_at"] else "?"
+        lines.append(f"• **{m['title']}** ({m['year']}) — {date}")
+    if len(watched) > 20:
+        lines.append(f"\n*...and {len(watched) - 20} more*")
+    await interaction.response.send_message("\n".join(lines))
+
+
+@history_group.command(name="remove", description="Remove a movie from the watch history")
+@app_commands.default_permissions(manage_messages=True)
+@app_commands.describe(title="Title of the movie to remove from history")
+async def movie_history_remove(interaction: discord.Interaction, title: str) -> None:
+    await interaction.response.defer()
+
+    result = await _omdb_search(title)
+    if not result:
+        await interaction.followup.send(
+            f"*rustles in the shadows* ...couldn't find **{title}** on OMDb. Try a more specific title?"
+        )
+        return
+
+    imdb_id = result["imdbID"]
+    movie_title = result["Title"]
+    year = result["Year"]
+
+    removed = remove_watched(imdb_id)
+    if removed:
+        log.info("Removed %r (%s) from watch history by %s", movie_title, imdb_id, interaction.user)
+        await interaction.followup.send(f"Removed **{movie_title} ({year})** from the watch history.")
+    else:
+        await interaction.followup.send(
+            f"**{movie_title} ({year})** isn't in the watch history."
+        )
+
+
+bot.tree.add_command(movie_group)
 
 
 # ── Webhook handlers ───────────────────────────────────────────────────────
