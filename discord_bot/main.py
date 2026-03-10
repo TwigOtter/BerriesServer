@@ -5,7 +5,6 @@ Discord bot for Berries' community server.
 
 Responsibilities:
   - Respond to @mentions anywhere in the server (RAG-backed)
-  - Respond to regular messages in whitelisted channels (RAG-backed)
   - Slash commands: /ping, /movie suggest add|remove|list, /movie announce, /movie history list|remove
   - Webhook server (port 8002) for going-live events forwarded from ingest_api
 
@@ -17,7 +16,6 @@ import asyncio
 import logging
 import logging.handlers
 import random
-import time
 import uuid
 from datetime import datetime, timezone
 
@@ -30,7 +28,6 @@ from fastapi import FastAPI, Request
 
 from shared.chroma_client import get_collection
 from shared.config import (
-    CHUNK_TIMEOUT_SEC,
     CHUNK_TOKEN_LIMIT,
     CHROMA_N_RESULTS,
     DISCORD_ANNOUNCE_CHANNEL_ID,
@@ -113,7 +110,6 @@ webhook_app = FastAPI(title="Berries Discord Webhook")
 # Flushed to ChromaDB at CHUNK_TOKEN_LIMIT tokens or CHUNK_TIMEOUT_SEC inactivity.
 
 _watch_buffers: dict[int, list[dict]] = {}
-_watch_last_event: dict[int, float] = {}
 
 
 async def _flush_watch_channel(channel_id: int, reason: str) -> None:
@@ -155,18 +151,13 @@ async def _flush_watch_channel(channel_id: int, reason: str) -> None:
     except Exception:
         log.exception("Failed to embed watch channel chunk for channel %s", channel_id)
 
-    # Keep last DISCORD_CHUNK_OVERLAP_MESSAGES entries as seed for next chunk
-    _watch_buffers[channel_id] = buf[-DISCORD_CHUNK_OVERLAP_MESSAGES:]
+    # Keep last DISCORD_CHUNK_OVERLAP_MESSAGES entries as seed for next chunk,
+    # but trim from the front if the overlap itself already exceeds the token limit.
+    overlap = buf[-DISCORD_CHUNK_OVERLAP_MESSAGES:]
+    while len(overlap) > 1 and count_tokens("\n".join(e["text"] for e in overlap)) >= CHUNK_TOKEN_LIMIT:
+        overlap = overlap[1:]
+    _watch_buffers[channel_id] = overlap
 
-
-async def _watch_flush_timer_loop() -> None:
-    """Background task: flush watch channel buffers on inactivity timeout."""
-    while True:
-        await asyncio.sleep(10)
-        now = time.time()
-        for channel_id, last_event in list(_watch_last_event.items()):
-            if _watch_buffers.get(channel_id) and (now - last_event) >= CHUNK_TIMEOUT_SEC:
-                await _flush_watch_channel(channel_id, reason="timeout")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -309,7 +300,8 @@ async def _post_to_announce(message: str) -> bool:
 async def _count_recent_bot_messages(channel: discord.TextChannel, before: discord.Message, limit: int = 20) -> int:
     """Count how many of the last `limit` messages were sent by the bot."""
     try:
-        return sum(1 async for m in channel.history(limit=limit, before=before) if m.author == bot.user)
+        messages = [m async for m in channel.history(limit=limit, before=before)]
+        return sum(1 for m in messages if m.author == bot.user)
     except Exception:
         log.exception("Failed to count bot messages in channel %s", channel.id)
         return 0
@@ -323,7 +315,6 @@ async def on_ready() -> None:
     log.info("Berries channel whitelist IDs: %s", DISCORD_BERRIES_CHANNEL_WHITELIST_IDS)
     log.info("Watch channel IDs: %s", DISCORD_WATCH_CHANNEL_IDS)
     init_movie_db()
-    asyncio.create_task(_watch_flush_timer_loop())
     try:
         synced = await bot.tree.sync()
         log.info("Synced %d slash command(s)", len(synced))
@@ -343,7 +334,6 @@ async def on_message(message: discord.Message) -> None:
             "text": f"[{message.author.display_name}]: {message.content}",
             "timestamp": message.created_at.timestamp(),
         })
-        _watch_last_event[channel_id] = time.time()
         log.debug("Watch buffer #%s: %d entries", channel_id, len(_watch_buffers[channel_id]))
         buf_text = "\n".join(e["text"] for e in _watch_buffers[channel_id])
         if count_tokens(buf_text) >= CHUNK_TOKEN_LIMIT:
@@ -358,9 +348,7 @@ async def on_message(message: discord.Message) -> None:
         await bot.process_commands(message)
         return
 
-    content = message.content
-    if mentioned:
-        content = content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
+    content = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
 
     if not content:
         log.debug("Ignoring empty message from %s in channel %s", message.author, message.channel.id)
@@ -394,14 +382,9 @@ async def on_message(message: discord.Message) -> None:
         async with message.channel.typing():
             context = _get_chroma_context(content)
             history = await _get_channel_history(message.channel, before=message)
-            system_prompt = _load_personality()
-            if context:
-                system_prompt += f"\n\n{context}"
-            if history:
-                system_prompt += f"\n\n{history}"
-            user_message = f"{message.author.display_name}: {content}"
+            system_suffix = "\n\n".join(filter(None, [context, history]))
             log.debug("Calling LLM for on_message")
-            response = await get_completion(system_prompt=system_prompt, user_message=user_message)
+            response = await _llm(f"{message.author.display_name}: {content}", system_suffix=system_suffix)
             log.debug("LLM response for on_message: %.120r", response)
 
         await message.channel.send(response)
