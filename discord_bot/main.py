@@ -34,7 +34,8 @@ from shared.config import (
     CHUNK_TOKEN_LIMIT,
     CHROMA_N_RESULTS,
     DISCORD_ANNOUNCE_CHANNEL_ID,
-    DISCORD_BERRIES_CHANNEL_IDS,
+    DISCORD_BERRIES_CHANNEL_WHITELIST_IDS,
+    DISCORD_BERRIES_CHAT_CHANNEL_ID,
     DISCORD_BOT_WEBHOOK_PORT,
     DISCORD_CHUNK_OVERLAP_MESSAGES,
     DISCORD_EVENT_ROLE_ID,
@@ -305,12 +306,21 @@ async def _post_to_announce(message: str) -> bool:
         return False
 
 
+async def _count_recent_bot_messages(channel: discord.TextChannel, before: discord.Message, limit: int = 20) -> int:
+    """Count how many of the last `limit` messages were sent by the bot."""
+    try:
+        return sum(1 async for m in channel.history(limit=limit, before=before) if m.author == bot.user)
+    except Exception:
+        log.exception("Failed to count bot messages in channel %s", channel.id)
+        return 0
+
+
 # ── Events ─────────────────────────────────────────────────────────────────
 
 @bot.event
 async def on_ready() -> None:
     log.info("Logged in as %s (id: %s)", bot.user, bot.user.id)
-    log.info("Berries channel IDs: %s", DISCORD_BERRIES_CHANNEL_IDS)
+    log.info("Berries channel whitelist IDs: %s", DISCORD_BERRIES_CHANNEL_WHITELIST_IDS)
     log.info("Watch channel IDs: %s", DISCORD_WATCH_CHANNEL_IDS)
     init_movie_db()
     asyncio.create_task(_watch_flush_timer_loop())
@@ -345,14 +355,8 @@ async def on_message(message: discord.Message) -> None:
     mentioned = bot.user in message.mentions and not message.mention_everyone
 
     if not mentioned:
-        # Outside whitelisted channels, ignore regular messages
-        if DISCORD_BERRIES_CHANNEL_IDS and message.channel.id not in DISCORD_BERRIES_CHANNEL_IDS:
-            log.debug(
-                "Ignoring message in non-whitelisted channel %s from %s",
-                message.channel.id, message.author,
-            )
-            await bot.process_commands(message)
-            return
+        await bot.process_commands(message)
+        return
 
     content = message.content
     if mentioned:
@@ -366,6 +370,25 @@ async def on_message(message: discord.Message) -> None:
         "Responding to %s in channel %s (mentioned=%s): %.120r",
         message.author, message.channel.id, mentioned, content,
     )
+
+    # If Berries was @mentioned in a non-whitelisted channel and has already spoken
+    # twice in the recent history, redirect to #berries-chat instead of responding.
+    if (
+        DISCORD_BERRIES_CHAT_CHANNEL_ID
+        and message.channel.id not in DISCORD_BERRIES_CHANNEL_WHITELIST_IDS
+    ):
+        bot_count = await _count_recent_bot_messages(message.channel, before=message)
+        if bot_count >= 2:
+            log.info(
+                "Redirecting %s to berries-chat (%d recent bot messages in channel %s)",
+                message.author, bot_count, message.channel.id,
+            )
+            await message.channel.send(
+                f"Hey, there's a lot of people here and it's making me anxious to talk here too much. "
+                f"If you want to have a conversation, let's talk in <#{DISCORD_BERRIES_CHAT_CHANNEL_ID}>"
+            )
+            await bot.process_commands(message)
+            return
 
     try:
         async with message.channel.typing():

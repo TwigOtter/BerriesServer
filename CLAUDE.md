@@ -58,7 +58,7 @@ Streamer.bot → ingest_api (8000) → ChromaDB + SQLite + JSONL transcripts
 Copy `.env.example` to `.env`. Key variables:
 - `LLM_BACKEND` — `"anthropic"` or `"ollama"`
 - `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` — Claude config (currently Haiku 4.5)
-- `DISCORD_TOKEN`, `DISCORD_BERRIES_CHANNEL_IDS`, `DISCORD_ANNOUNCE_CHANNEL_ID`
+- `DISCORD_TOKEN`, `DISCORD_BERRIES_CHANNEL_WHITELIST_IDS`, `DISCORD_ANNOUNCE_CHANNEL_ID`
 - `INGEST_SECRET` — shared auth header between services
 - `CHUNK_TOKEN_LIMIT=480`, `CHUNK_TIMEOUT_SEC=300`, `CHROMA_N_RESULTS=4`
 

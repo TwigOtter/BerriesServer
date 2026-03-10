@@ -49,8 +49,8 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
 
 # ── Discord ────────────────────────────────────────────────────────────────
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
-DISCORD_BERRIES_CHANNEL_IDS: list[int] = [
-    int(x) for x in os.getenv("DISCORD_BERRIES_CHANNEL_IDS", "").split(",")
+DISCORD_BERRIES_CHANNEL_WHITELIST_IDS: list[int] = [
+    int(x) for x in os.getenv("DISCORD_BERRIES_CHANNEL_WHITELIST_IDS", "").split(",")
     if x.strip()
 ]
 DISCORD_WATCH_CHANNEL_IDS: list[int] = [
@@ -60,6 +60,8 @@ DISCORD_WATCH_CHANNEL_IDS: list[int] = [
 DISCORD_CHUNK_OVERLAP_MESSAGES = int(os.getenv("DISCORD_CHUNK_OVERLAP_MESSAGES", "5"))
 _announce_id = os.getenv("DISCORD_ANNOUNCE_CHANNEL_ID", "")
 DISCORD_ANNOUNCE_CHANNEL_ID: int | None = int(_announce_id) if _announce_id else None
+_berries_chat_id = os.getenv("DISCORD_BERRIES_CHAT_CHANNEL_ID", "")
+DISCORD_BERRIES_CHAT_CHANNEL_ID: int | None = int(_berries_chat_id) if _berries_chat_id else None
 DISCORD_BOT_WEBHOOK_PORT = int(os.getenv("DISCORD_BOT_WEBHOOK_PORT", "8002"))
 DISCORD_BOT_WEBHOOK_URL = os.getenv("DISCORD_BOT_WEBHOOK_URL", "http://127.0.0.1:8002")
 _event_role_id = os.getenv("DISCORD_EVENT_ROLE_ID", "")
