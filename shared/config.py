@@ -53,6 +53,11 @@ DISCORD_BERRIES_CHANNEL_IDS: list[int] = [
     int(x) for x in os.getenv("DISCORD_BERRIES_CHANNEL_IDS", "").split(",")
     if x.strip()
 ]
+DISCORD_WATCH_CHANNEL_IDS: list[int] = [
+    int(x) for x in os.getenv("DISCORD_WATCH_CHANNEL_IDS", "").split(",")
+    if x.strip()
+]
+DISCORD_CHUNK_OVERLAP_MESSAGES = int(os.getenv("DISCORD_CHUNK_OVERLAP_MESSAGES", "5"))
 _announce_id = os.getenv("DISCORD_ANNOUNCE_CHANNEL_ID", "")
 DISCORD_ANNOUNCE_CHANNEL_ID: int | None = int(_announce_id) if _announce_id else None
 DISCORD_BOT_WEBHOOK_PORT = int(os.getenv("DISCORD_BOT_WEBHOOK_PORT", "8002"))

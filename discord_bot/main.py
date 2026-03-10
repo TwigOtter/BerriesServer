@@ -17,6 +17,9 @@ import asyncio
 import logging
 import logging.handlers
 import random
+import time
+import uuid
+from datetime import datetime, timezone
 
 import discord
 import httpx
@@ -27,19 +30,24 @@ from fastapi import FastAPI, Request
 
 from shared.chroma_client import get_collection
 from shared.config import (
+    CHUNK_TIMEOUT_SEC,
+    CHUNK_TOKEN_LIMIT,
     CHROMA_N_RESULTS,
-    LOGS_DIR,
     DISCORD_ANNOUNCE_CHANNEL_ID,
     DISCORD_BERRIES_CHANNEL_IDS,
     DISCORD_BOT_WEBHOOK_PORT,
+    DISCORD_CHUNK_OVERLAP_MESSAGES,
     DISCORD_EVENT_ROLE_ID,
     DISCORD_STREAM_ROLE_ID,
     DISCORD_TOKEN,
+    DISCORD_WATCH_CHANNEL_IDS,
     GIPHY_API_KEY,
+    LOGS_DIR,
     OMDB_API_KEY,
     PERSONALITY_FILE,
     TWITCH_CHANNEL,
 )
+from shared.tokenizer import count_tokens
 from shared.llm_client import get_completion
 from shared.movie_db import (
     add_suggestion,
@@ -97,6 +105,67 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # ── Webhook server (receives going-live events from ingest_api) ────────────
 
 webhook_app = FastAPI(title="Berries Discord Webhook")
+
+
+# ── Watch channel buffer ────────────────────────────────────────────────────
+# Each channel gets its own list of {"source", "text", "timestamp"} entries.
+# Flushed to ChromaDB at CHUNK_TOKEN_LIMIT tokens or CHUNK_TIMEOUT_SEC inactivity.
+
+_watch_buffers: dict[int, list[dict]] = {}
+_watch_last_event: dict[int, float] = {}
+
+
+async def _flush_watch_channel(channel_id: int, reason: str) -> None:
+    buf = _watch_buffers.get(channel_id)
+    if not buf:
+        return
+
+    channel = bot.get_channel(channel_id)
+    channel_name = getattr(channel, "name", str(channel_id))
+    guild_id = str(channel.guild.id) if channel and hasattr(channel, "guild") and channel.guild else ""
+
+    now = datetime.now(timezone.utc)
+    chunk_id = f"discord_{now.strftime('%Y-%m-%dT%H-%M-%S')}_{uuid.uuid4().hex[:6]}"
+    start_ts = datetime.fromtimestamp(buf[0]["timestamp"], tz=timezone.utc).isoformat()
+    end_ts = datetime.fromtimestamp(buf[-1]["timestamp"], tz=timezone.utc).isoformat()
+    text = "\n".join(e["text"] for e in buf)
+    token_count = count_tokens(text)
+
+    try:
+        collection = get_collection()
+        collection.add(
+            documents=[text],
+            ids=[chunk_id],
+            metadatas=[{
+                "source": "discord",
+                "channel_id": str(channel_id),
+                "channel_name": channel_name,
+                "guild_id": guild_id,
+                "start_time": start_ts,
+                "end_time": end_ts,
+                "flush_reason": reason,
+                "token_count": token_count,
+            }],
+        )
+        log.info(
+            "Flushed watch channel #%s (%s): %d entries, %d tokens, reason=%s",
+            channel_name, channel_id, len(buf), token_count, reason,
+        )
+    except Exception:
+        log.exception("Failed to embed watch channel chunk for channel %s", channel_id)
+
+    # Keep last DISCORD_CHUNK_OVERLAP_MESSAGES entries as seed for next chunk
+    _watch_buffers[channel_id] = buf[-DISCORD_CHUNK_OVERLAP_MESSAGES:]
+
+
+async def _watch_flush_timer_loop() -> None:
+    """Background task: flush watch channel buffers on inactivity timeout."""
+    while True:
+        await asyncio.sleep(10)
+        now = time.time()
+        for channel_id, last_event in list(_watch_last_event.items()):
+            if _watch_buffers.get(channel_id) and (now - last_event) >= CHUNK_TIMEOUT_SEC:
+                await _flush_watch_channel(channel_id, reason="timeout")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -241,8 +310,10 @@ async def _post_to_announce(message: str) -> bool:
 @bot.event
 async def on_ready() -> None:
     log.info("Logged in as %s (id: %s)", bot.user, bot.user.id)
-    log.info("Watching channel IDs: %s", DISCORD_BERRIES_CHANNEL_IDS)
+    log.info("Berries channel IDs: %s", DISCORD_BERRIES_CHANNEL_IDS)
+    log.info("Watch channel IDs: %s", DISCORD_WATCH_CHANNEL_IDS)
     init_movie_db()
+    asyncio.create_task(_watch_flush_timer_loop())
     try:
         synced = await bot.tree.sync()
         log.info("Synced %d slash command(s)", len(synced))
@@ -252,6 +323,22 @@ async def on_ready() -> None:
 
 @bot.event
 async def on_message(message: discord.Message) -> None:
+    # Buffer watch channel messages — runs for all messages including bots and Berries herself
+    if DISCORD_WATCH_CHANNEL_IDS and message.channel.id in DISCORD_WATCH_CHANNEL_IDS and message.content:
+        channel_id = message.channel.id
+        if channel_id not in _watch_buffers:
+            _watch_buffers[channel_id] = []
+        _watch_buffers[channel_id].append({
+            "source": message.author.display_name,
+            "text": f"[{message.author.display_name}]: {message.content}",
+            "timestamp": message.created_at.timestamp(),
+        })
+        _watch_last_event[channel_id] = time.time()
+        log.debug("Watch buffer #%s: %d entries", channel_id, len(_watch_buffers[channel_id]))
+        buf_text = "\n".join(e["text"] for e in _watch_buffers[channel_id])
+        if count_tokens(buf_text) >= CHUNK_TOKEN_LIMIT:
+            await _flush_watch_channel(channel_id, reason="token_limit")
+
     if message.author == bot.user:
         return
 
