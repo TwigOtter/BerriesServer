@@ -67,7 +67,7 @@ Copy `.env.example` to `.env`. Key variables:
 - **JSONL transcripts are ground truth** — ChromaDB is a derived index; can be rebuilt from `data/transcripts/*.jsonl`
 - **`recent_chunks` deque** — In-memory cache (maxlen=2) in ingest_api, shared with berries_bot for recency context
 - **Personality in `berries_bot/personality.txt`** — Edit character prompt without code changes; responses must be TTS-friendly (no markdown, single line)
-- **Discord messages are NOT logged** — Only Twitch transcripts stored, for community privacy
+- **Discord watch channels are logged** — Messages in `DISCORD_WATCH_CHANNEL_IDS` channels are buffered and flushed to ChromaDB (same chunking logic as Twitch). Other Discord channels are not stored.
 - **Streamer.bot handles response gating** — Redeems, keywords, and sub checks are managed externally
 
 ## No Test Suite
