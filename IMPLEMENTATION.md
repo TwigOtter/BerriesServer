@@ -29,6 +29,8 @@ Changelog, roadmap, and decisions. Updated at the end of each work session.
 - [ ] `berries_bot` as a standalone service — currently the response pipeline lives inside `ingest_api`; may be worth extracting once things stabilize
 - [ ] **`embed_docs.py` — manual document embedding script** — drop `.txt`/`.md` files into `data/embed-inbox/`, run the script; it chunks each file, embeds into ChromaDB with `{"source": "document"}` metadata, then moves the file to `data/embed-archive/`. Designed to run on demand, not as a watcher. Use case: lore, story writing, reference docs Berries should be able to draw from.
 - [ ] **Discord message embedding** — optional future path: write select Discord channel messages into ChromaDB with `{"source": "discord"}` metadata, giving Berries community context beyond stream transcripts. Disabled by default; would need a flag or separate script to enable.
+- [ ] **Discord channel monitoring (RAG source)** — allow Berries to silently watch specific Discord channels (configured via `DISCORD_WATCH_CHANNEL_IDS` env var) and embed their messages into ChromaDB for RAG context, without responding. Separate from `DISCORD_BERRIES_CHANNEL_IDS` (where he responds). Enables community lore, inside jokes, and channel history to inform his responses.
+- [ ] **Discord mention rate limiting** — prevent @mention spam by adding a per-user cooldown (e.g. 60s) and/or a per-channel cooldown in `discord_bot`. When rate-limited, either silently ignore or send a short in-character brush-off. Cooldown values configurable via `.env`.
 
 ---
 
