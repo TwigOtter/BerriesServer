@@ -229,3 +229,13 @@ def get_twitch_link(discord_id: str) -> str | None:
             "SELECT username FROM users WHERE discord_id = ?", (discord_id,)
         ).fetchone()
     return row["username"] if row else None
+
+
+def get_discord_for_twitch(twitch_username: str) -> str | None:
+    """Return the Discord user ID linked to a Twitch username, or None."""
+    twitch_username = twitch_username.lower().strip()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT discord_id FROM users WHERE username = ?", (twitch_username,)
+        ).fetchone()
+    return row["discord_id"] if row else None

@@ -36,6 +36,7 @@ from shared.config import (
     DISCORD_BOT_WEBHOOK_PORT,
     DISCORD_CHUNK_OVERLAP_MESSAGES,
     DISCORD_EVENT_ROLE_ID,
+    DISCORD_LOG_CHANNEL_ID,
     DISCORD_RULES_STICKER_ID,
     DISCORD_STICKERS_ONLY_CHANNEL_IDS,
     DISCORD_STREAM_ROLE_ID,
@@ -60,7 +61,7 @@ from shared.movie_db import (
     remove_suggestion,
     remove_watched,
 )
-from shared.user_db import init_db as init_user_db, link_discord, get_twitch_link
+from shared.user_db import init_db as init_user_db, link_discord, get_twitch_link, get_discord_for_twitch
 
 # ── Logging ────────────────────────────────────────────────────────────────
 
@@ -499,6 +500,21 @@ async def twitch_link(interaction: discord.Interaction, twitch_username: str) ->
         return
 
     discord_id = str(interaction.user.id)
+
+    # Block if the Twitch account is already claimed by a different Discord user
+    existing_discord = get_discord_for_twitch(twitch_username)
+    if existing_discord and existing_discord != discord_id:
+        await interaction.followup.send(
+            f"*narrows eyes from the shadows* ...Twitch account **{twitch_username}** is already linked to a different Discord account. "
+            "If you believe this is an error, please contact a moderator.",
+            ephemeral=True,
+        )
+        log.warning(
+            "Twitch link BLOCKED: Discord user %s (%s) tried to claim Twitch %r, already owned by Discord ID %s",
+            interaction.user, discord_id, twitch_username, existing_discord,
+        )
+        return
+
     result = link_discord(twitch_username, discord_id)
     status = result["status"]
     previous = result.get("previous")
@@ -523,6 +539,18 @@ async def twitch_link(interaction: discord.Interaction, twitch_username: str) ->
         "Twitch link: Discord user %s (%s) → Twitch %r (status=%s, previous=%r)",
         interaction.user, discord_id, twitch_username, status, previous,
     )
+
+    # TODO: post an audit message to #berries-log so mods can review link actions.
+    # Create a #berries-log channel, add DISCORD_LOG_CHANNEL_ID to .env, then do:
+    #
+    #   if DISCORD_LOG_CHANNEL_ID:
+    #       log_channel = bot.get_channel(DISCORD_LOG_CHANNEL_ID)
+    #       if log_channel:
+    #           action = "blocked (already claimed)" if status == "blocked" else status
+    #           await log_channel.send(
+    #               f"🔗 **Twitch link** | {interaction.user.mention} → `{twitch_username}` | status: `{status}`"
+    #               + (f" (was `{previous}`)" if previous else "")
+    #           )
 
 
 # ── /movie subcommand group ─────────────────────────────────────────────────
