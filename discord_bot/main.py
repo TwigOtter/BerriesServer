@@ -60,6 +60,7 @@ from shared.movie_db import (
     remove_suggestion,
     remove_watched,
 )
+from shared.user_db import init_db as init_user_db, link_discord, get_twitch_link
 
 # ── Logging ────────────────────────────────────────────────────────────────
 
@@ -334,6 +335,7 @@ async def on_ready() -> None:
     log.info("Logged in as %s (id: %s)", bot.user, bot.user.id)
     log.info("Berries channel whitelist IDs: %s", DISCORD_BERRIES_CHANNEL_WHITELIST_IDS)
     log.info("Watch channel IDs: %s", DISCORD_WATCH_CHANNEL_IDS)
+    init_user_db()
     init_movie_db()
     try:
         synced = await bot.tree.sync()
@@ -481,6 +483,46 @@ class MovieSelectView(discord.ui.View):
 @bot.tree.command(name="ping", description="Check if Berries is lurking")
 async def ping(interaction: discord.Interaction) -> None:
     await interaction.response.send_message("*stares from the shadows* ...yes, I am here. :3")
+
+
+@bot.tree.command(name="twitch-link", description="Link your Twitch account to your Discord profile")
+@app_commands.describe(twitch_username="Your Twitch username (without the @)")
+async def twitch_link(interaction: discord.Interaction, twitch_username: str) -> None:
+    await interaction.response.defer(ephemeral=True)
+
+    twitch_username = twitch_username.lstrip("@").strip().lower()
+    if not twitch_username:
+        await interaction.followup.send(
+            "*tilts head* ...that doesn't look like a valid Twitch username.",
+            ephemeral=True,
+        )
+        return
+
+    discord_id = str(interaction.user.id)
+    result = link_discord(twitch_username, discord_id)
+    status = result["status"]
+    previous = result.get("previous")
+
+    if status == "already_linked":
+        await interaction.followup.send(
+            f"*peers at you* ...your Discord is already linked to **{twitch_username}** on Twitch. Nothing to change!",
+            ephemeral=True,
+        )
+    elif previous and previous != twitch_username:
+        await interaction.followup.send(
+            f"*rustles thoughtfully* ...updated your link from **{previous}** to **{twitch_username}**. Got it.",
+            ephemeral=True,
+        )
+    else:
+        await interaction.followup.send(
+            f"*nods slowly from the dark* ...noted. Your Discord is now linked to Twitch account **{twitch_username}**.",
+            ephemeral=True,
+        )
+
+    log.info(
+        "Twitch link: Discord user %s (%s) → Twitch %r (status=%s, previous=%r)",
+        interaction.user, discord_id, twitch_username, status, previous,
+    )
 
 
 # ── /movie subcommand group ─────────────────────────────────────────────────

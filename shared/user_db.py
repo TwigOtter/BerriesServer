@@ -42,6 +42,12 @@ def init_db() -> None:
             )
         """)
         conn.commit()
+        # Migration: add discord_id column if it doesn't already exist
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN discord_id TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Column already exists
 
 
 def upsert_user(
@@ -153,3 +159,73 @@ def increment_streams_watched(usernames: list[str]) -> None:
             [(u,) for u in usernames],
         )
         conn.commit()
+
+
+def link_discord(twitch_username: str, discord_id: str) -> dict:
+    """
+    Associate a Discord user ID with a Twitch username.
+
+    Creates a minimal user row if the Twitch username doesn't exist yet.
+    If the Discord ID was previously linked to a different Twitch account,
+    that old link is cleared first.
+
+    Returns a dict with:
+      status          — "already_linked" | "linked" | "updated"
+      twitch_username — the (normalised) Twitch username now stored
+      previous        — the old Twitch username if the Discord ID moved, else None
+    """
+    twitch_username = twitch_username.lower().strip()
+    now = datetime.now(timezone.utc).isoformat()
+
+    with _connect() as conn:
+        # Check if this Discord ID is already linked somewhere
+        existing = conn.execute(
+            "SELECT username FROM users WHERE discord_id = ?", (discord_id,)
+        ).fetchone()
+
+        if existing and existing["username"] == twitch_username:
+            return {"status": "already_linked", "twitch_username": twitch_username, "previous": None}
+
+        # Clear the old discord_id so one Discord account maps to one Twitch account
+        if existing:
+            conn.execute(
+                "UPDATE users SET discord_id = NULL WHERE discord_id = ?", (discord_id,)
+            )
+
+        # Upsert the target Twitch user row
+        target = conn.execute(
+            "SELECT username FROM users WHERE username = ?", (twitch_username,)
+        ).fetchone()
+
+        if target:
+            conn.execute(
+                "UPDATE users SET discord_id = ? WHERE username = ?",
+                (discord_id, twitch_username),
+            )
+            status = "updated"
+        else:
+            conn.execute(
+                """
+                INSERT INTO users (username, discord_id, notes, first_seen, last_seen)
+                VALUES (?, ?, '{}', ?, ?)
+                """,
+                (twitch_username, discord_id, now, now),
+            )
+            status = "linked"
+
+        conn.commit()
+
+    return {
+        "status": status,
+        "twitch_username": twitch_username,
+        "previous": existing["username"] if existing else None,
+    }
+
+
+def get_twitch_link(discord_id: str) -> str | None:
+    """Return the Twitch username linked to a Discord user ID, or None."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT username FROM users WHERE discord_id = ?", (discord_id,)
+        ).fetchone()
+    return row["username"] if row else None
