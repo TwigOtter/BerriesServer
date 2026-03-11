@@ -48,6 +48,19 @@ def init_db() -> None:
             conn.commit()
         except sqlite3.OperationalError:
             pass  # Column already exists
+        # Migration: add twitch_id column if it doesn't already exist
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN twitch_id INTEGER")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        # Partial unique index allows multiple NULLs (existing rows) while
+        # enforcing uniqueness for all rows that do have a twitch_id.
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_users_twitch_id
+            ON users(twitch_id) WHERE twitch_id IS NOT NULL
+        """)
+        conn.commit()
 
 
 def upsert_user(
@@ -57,41 +70,142 @@ def upsert_user(
     subscription_months: int = 0,
     gift_sub_count: int = 0,
     timestamp: str | None = None,
+    twitch_id: int | None = None,
 ) -> None:
     """
     Insert a new user or update an existing one on every chat event.
     Increments messages_sent. Subscription data is always overwritten with the
     latest values from Streamer.bot (source of truth).
+
+    When twitch_id is provided it is used as the stable lookup key. If an
+    existing row is found under that twitch_id with a different username, the
+    username (and display_name) are updated — this handles Twitch name changes
+    transparently while preserving all stats and history.
+
+    For rows that pre-date the twitch_id column (username match, no twitch_id),
+    the twitch_id is back-filled on the next chat event from that user.
     """
     if timestamp is None:
         timestamp = datetime.now(timezone.utc).isoformat()
 
     with _connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO users (
-                username, display_name, subscription_tier, subscription_months,
-                gift_sub_count, messages_sent, first_seen, last_seen
+        if twitch_id is not None:
+            row = conn.execute(
+                "SELECT username FROM users WHERE twitch_id = ?", (twitch_id,)
+            ).fetchone()
+
+            if row is not None:
+                # Known user — update in place, renaming if necessary
+                if row["username"] != username:
+                    print(
+                        f"[user_db] Username changed for twitch_id={twitch_id}: "
+                        f"{row['username']!r} → {username!r}"
+                    )
+                    # Remove any stale row that already holds the new username
+                    # (could exist for users who chatted before twitch_id tracking)
+                    conn.execute(
+                        "DELETE FROM users WHERE username = ? AND twitch_id IS NULL",
+                        (username,),
+                    )
+                conn.execute(
+                    """
+                    UPDATE users SET
+                        username            = ?,
+                        display_name        = COALESCE(?, display_name),
+                        subscription_tier   = ?,
+                        subscription_months = ?,
+                        gift_sub_count      = ?,
+                        messages_sent       = messages_sent + 1,
+                        last_seen           = ?
+                    WHERE twitch_id = ?
+                    """,
+                    (
+                        username,
+                        display_name,
+                        subscription_tier,
+                        subscription_months,
+                        gift_sub_count,
+                        timestamp,
+                        twitch_id,
+                    ),
+                )
+            else:
+                # twitch_id not yet in DB — migrate existing row by username, or insert fresh
+                old_row = conn.execute(
+                    "SELECT username FROM users WHERE username = ?", (username,)
+                ).fetchone()
+                if old_row is not None:
+                    # Back-fill twitch_id onto the pre-existing row
+                    conn.execute(
+                        """
+                        UPDATE users SET
+                            twitch_id           = ?,
+                            display_name        = COALESCE(?, display_name),
+                            subscription_tier   = ?,
+                            subscription_months = ?,
+                            gift_sub_count      = ?,
+                            messages_sent       = messages_sent + 1,
+                            last_seen           = ?
+                        WHERE username = ?
+                        """,
+                        (
+                            twitch_id,
+                            display_name,
+                            subscription_tier,
+                            subscription_months,
+                            gift_sub_count,
+                            timestamp,
+                            username,
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO users (
+                            twitch_id, username, display_name, subscription_tier,
+                            subscription_months, gift_sub_count, messages_sent,
+                            first_seen, last_seen
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                        """,
+                        (
+                            twitch_id,
+                            username,
+                            display_name,
+                            subscription_tier,
+                            subscription_months,
+                            gift_sub_count,
+                            timestamp,
+                            timestamp,
+                        ),
+                    )
+        else:
+            # Legacy path: no twitch_id available, fall back to username keying
+            conn.execute(
+                """
+                INSERT INTO users (
+                    username, display_name, subscription_tier, subscription_months,
+                    gift_sub_count, messages_sent, first_seen, last_seen
+                )
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                ON CONFLICT(username) DO UPDATE SET
+                    display_name        = COALESCE(excluded.display_name, display_name),
+                    subscription_tier   = excluded.subscription_tier,
+                    subscription_months = excluded.subscription_months,
+                    gift_sub_count      = excluded.gift_sub_count,
+                    messages_sent       = messages_sent + 1,
+                    last_seen           = excluded.last_seen
+                """,
+                (
+                    username,
+                    display_name,
+                    subscription_tier,
+                    subscription_months,
+                    gift_sub_count,
+                    timestamp,
+                    timestamp,
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, 1, ?, ?)
-            ON CONFLICT(username) DO UPDATE SET
-                display_name        = COALESCE(excluded.display_name, display_name),
-                subscription_tier   = excluded.subscription_tier,
-                subscription_months = excluded.subscription_months,
-                gift_sub_count      = excluded.gift_sub_count,
-                messages_sent       = messages_sent + 1,
-                last_seen           = excluded.last_seen
-            """,
-            (
-                username,
-                display_name,
-                subscription_tier,
-                subscription_months,
-                gift_sub_count,
-                timestamp,
-                timestamp,
-            ),
-        )
         conn.commit()
 
 
