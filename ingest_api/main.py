@@ -19,6 +19,7 @@ Run with:
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from collections import deque
@@ -27,6 +28,8 @@ from datetime import datetime, timezone
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
+
+logger = logging.getLogger("ingest_api")
 
 from shared.config import (
     CHUNK_OVERLAP_SEC,
@@ -291,7 +294,7 @@ async def receive_chat(
         flags.append("first!")
     if bits:
         flags.append(f"{bits} bits")
-    print(f"[ingest_api] /event/chat — {username} ({user_id}) [{', '.join(flags)}]: {raw_text!r}")
+    logger.info("/event/chat — %s (%s) [%s]: %r", username, user_id, ", ".join(flags), raw_text)
 
     # Always upsert user profile, even if the message itself gets dropped.
     # This ensures rename tracking fires on every chat event regardless of content.
@@ -371,7 +374,7 @@ async def receive_stream_update(
     _stream_metadata["title"] = body.get("title", "")
     _stream_metadata["category"] = body.get("category", "")
 
-    print(f"[ingest_api] Stream metadata updated: {_stream_metadata}")
+    logger.info("Stream metadata updated: %s", _stream_metadata)
     return {"status": "ok", "stream_metadata": _stream_metadata}
 
 
@@ -408,7 +411,7 @@ async def receive_stream_event(
     if _buffer_token_count() >= CHUNK_TOKEN_LIMIT:
         await _flush_buffer(reason="token_limit")
 
-    print(f"[ingest_api] /event/stream ({event_type}) — {line}")
+    logger.info("/event/stream (%s) — %s", event_type, line)
     return {"status": "ok"}
 
 
@@ -426,7 +429,7 @@ async def going_live(
     _auth_check(x_secret)
     body = await request.json()
 
-    print(f"[ingest_api] /event/going-live — {body}")
+    logger.info("/event/going-live — %s", body)
 
     try:
         async with httpx.AsyncClient() as client:
@@ -436,7 +439,7 @@ async def going_live(
                 timeout=10.0,
             )
     except Exception as e:
-        print(f"[ingest_api] Failed to forward going-live to discord_bot: {e}")
+        logger.warning("Failed to forward going-live to discord_bot: %s", e)
 
     return {"status": "ok"}
 
@@ -459,7 +462,7 @@ def _load_personality() -> str:
     """Load Berries' system prompt from berries_bot/personality.txt."""
     if PERSONALITY_FILE.exists():
         return PERSONALITY_FILE.read_text(encoding="utf-8").strip()
-    print("[ingest_api] WARNING: personality.txt not found, using fallback prompt.")
+    logger.warning("personality.txt not found, using fallback prompt.")
     return "You are Berries, a spooky and playful forest demon on a Twitch stream. Keep responses short and in character."
 
 
@@ -489,7 +492,7 @@ async def _generate_response(text: str) -> str:
                 + context_block
             )
     except Exception as e:
-        print(f"[ingest_api] ChromaDB query failed (no context injected): {e}")
+        logger.warning("ChromaDB query failed (no context injected): %s", e)
 
     # Short-term memory: last 2 chunks from current session
     if recent_chunks:
@@ -518,9 +521,9 @@ async def _post_to_streamerbot(message: str, chat: bool = False, tts: bool = Fal
         async with httpx.AsyncClient() as client:
             resp = await client.post(STREAMERBOT_CALLBACK_URL, json=payload, timeout=5.0)
             resp.raise_for_status()
-        print(f"[ingest_api] Posted to Streamer.bot: {message!r} (CHAT={chat}, TTS={tts})")
+        logger.info("Posted to Streamer.bot: %r (CHAT=%s, TTS=%s)", message, chat, tts)
     except Exception as e:
-        print(f"[ingest_api] Failed to reach Streamer.bot at {STREAMERBOT_CALLBACK_URL}: {e}")
+        logger.warning("Failed to reach Streamer.bot at %s: %s", STREAMERBOT_CALLBACK_URL, e)
 
 
 @app.post("/event/mention")
@@ -555,7 +558,7 @@ async def receive_mention(
     tts = body.get("TTS", False)
     # log = body.get("log", True)  # TODO: use to suppress transcript writes
 
-    print(f"[ingest_api] /event/mention — text={text!r} CHAT={chat} TTS={tts}")
+    logger.info("/event/mention — text=%r CHAT=%s TTS=%s", text, chat, tts)
 
     if not text:
         return {"status": "ok", "triggered": False}
