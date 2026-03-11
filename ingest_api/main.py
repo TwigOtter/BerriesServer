@@ -309,6 +309,7 @@ async def receive_chat(
         display_name=display_name,
         subscription_tier=sub_tier,
         subscription_months=sub_months,
+        twitch_id=int(user_id) if user_id else None,
     )
 
     if _buffer_token_count() >= CHUNK_TOKEN_LIMIT:
