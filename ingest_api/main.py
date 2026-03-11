@@ -102,7 +102,7 @@ def _preprocess_message(
 ) -> str | None:
     """
     Clean a single message before buffering.
-    Returns None if the message should be dropped entirely.
+    Returns None only if the message is empty after stripping.
 
     If emote_count > 0 and text_stripped is provided, emote tokens are identified
     by diffing the original message against the stripped version, then consecutive
@@ -110,8 +110,7 @@ def _preprocess_message(
     """
     text = text.strip()
 
-    # Drop empty, single-character, or bot-command messages
-    if len(text) <= 1 or text.startswith("!"):
+    if not text:
         return None
 
     if emote_count > 0 and text_stripped:
@@ -294,6 +293,21 @@ async def receive_chat(
         flags.append(f"{bits} bits")
     print(f"[ingest_api] /event/chat — {username} ({user_id}) [{', '.join(flags)}]: {raw_text!r}")
 
+    # Always upsert user profile, even if the message itself gets dropped.
+    # This ensures rename tracking fires on every chat event regardless of content.
+    try:
+        parsed_user_id = int(user_id) if user_id else None
+    except (ValueError, TypeError):
+        parsed_user_id = None
+    from shared.user_db import upsert_user
+    upsert_user(
+        t_login=username,
+        t_display_name=display_name,
+        t_subscription_tier=sub_tier,
+        t_subscription_months=sub_months,
+        t_id=parsed_user_id,
+    )
+
     cleaned = _preprocess_message(username, raw_text, text_stripped, emote_count)
     if cleaned is None:
         return {"status": "dropped"}
@@ -301,16 +315,6 @@ async def receive_chat(
     _buffer.append({"source": username, "text": cleaned, "timestamp": time.time()})
     _last_event_time = time.time()
     _session_chatters.add(username)
-
-    # Upsert user profile passively from chat event data
-    from shared.user_db import upsert_user
-    upsert_user(
-        username=username,
-        display_name=display_name,
-        subscription_tier=sub_tier,
-        subscription_months=sub_months,
-        twitch_id=int(user_id) if user_id else None,
-    )
 
     if _buffer_token_count() >= CHUNK_TOKEN_LIMIT:
         await _flush_buffer(reason="token_limit")
