@@ -11,12 +11,12 @@ Stored in the same DB file as users (USERS_DB_PATH).
 import sqlite3
 from datetime import datetime, timezone
 
-from shared.config import USERS_DB_PATH
+from shared.config import MOVIES_DB_PATH
 
 
 def _connect() -> sqlite3.Connection:
-    USERS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(USERS_DB_PATH))
+    MOVIES_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(MOVIES_DB_PATH))
     conn.row_factory = sqlite3.Row
     return conn
 

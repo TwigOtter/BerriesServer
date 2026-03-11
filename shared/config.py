@@ -87,5 +87,6 @@ GIPHY_API_KEY = os.getenv("GIPHY_API_KEY", "")
 STREAMERBOT_CALLBACK_URL = os.getenv("STREAMERBOT_CALLBACK_URL", "http://127.0.0.1:7474")  # URL to POST responses back
 TWITCH_CHANNEL = os.getenv("TWITCH_CHANNEL", "twigotter")
 
-# ── User database ──────────────────────────────────────────────────────────
+# ── Databases ──────────────────────────────────────────────────────────────
 USERS_DB_PATH = DATA_DIR / "users.db"
+MOVIES_DB_PATH = DATA_DIR / "movies.db"

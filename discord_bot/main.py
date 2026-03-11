@@ -336,13 +336,29 @@ async def on_ready() -> None:
     log.info("Logged in as %s (id: %s)", bot.user, bot.user.id)
     log.info("Berries channel whitelist IDs: %s", DISCORD_BERRIES_CHANNEL_WHITELIST_IDS)
     log.info("Watch channel IDs: %s", DISCORD_WATCH_CHANNEL_IDS)
-    init_user_db()
-    init_movie_db()
+    try:
+        init_user_db()
+        init_movie_db()
+    except Exception:
+        log.exception("Failed to initialize databases")
     try:
         synced = await bot.tree.sync()
         log.info("Synced %d slash command(s)", len(synced))
     except Exception:
         log.exception("Failed to sync slash commands")
+
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: Exception) -> None:
+    log.exception("Slash command error in /%s: %s", interaction.command and interaction.command.qualified_name, error)
+    msg = "Something went wrong. Check the logs."
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except Exception:
+        pass
 
 
 @bot.event
@@ -543,13 +559,15 @@ async def twitch_link(interaction: discord.Interaction, twitch_username: str) ->
     )
 
     if DISCORD_LOG_CHANNEL_ID and status != "already_linked":
-        log_channel = bot.get_channel(DISCORD_LOG_CHANNEL_ID)
-        if log_channel:
+        try:
+            log_channel = bot.get_channel(DISCORD_LOG_CHANNEL_ID) or await bot.fetch_channel(DISCORD_LOG_CHANNEL_ID)
             detail = f" (was `{previous}`)" if previous else ""
             await log_channel.send(
                 f"**Twitch link** | {interaction.user.mention} (`{interaction.user}`) "
                 f"→ `{twitch_username}` | status: `{status}`{detail}"
             )
+        except Exception as e:
+            log.warning("Failed to send to log channel %s: %s", DISCORD_LOG_CHANNEL_ID, e)
 
 
 # ── /movie subcommand group ─────────────────────────────────────────────────

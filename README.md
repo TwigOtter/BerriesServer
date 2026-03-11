@@ -18,6 +18,7 @@ AI chatbot powering **Berries**, a spooky forest demon who responds in Twitch ch
      |── embeds ──────> data/chromadb/                       (semantic index)
      |── caches ──────> deque(maxlen=2)                      (short-term memory)
      |── upserts ─────> data/users.db                        (user profiles)
+     |── upserts ─────> data/movies.db                       (movie suggestions/history)
      |── responds ────> Streamer.bot webhook                 (Berries' replies)
      |── forwards ────> discord_bot :8002                    (going-live events)
 
@@ -96,6 +97,7 @@ Same personality + ChromaDB context as the Twitch bot.
 | `data/transcripts/stream_chat_YYYY-MM-DD.jsonl` | Ground truth stream archive, append-only |
 | `data/chromadb/` | Semantic vector index (rebuilt from `.jsonl` if corrupted) |
 | `data/users.db` | User profiles, passively built from chat events |
+| `data/movies.db` | Movie suggestions and watch history |
 | In-memory `deque(maxlen=2)` | Last 2 chunks for short-term context |
 
 ### Chunk Schema (`.jsonl` + ChromaDB)
@@ -208,7 +210,8 @@ BerriesServer/
 ├── data/
 │   ├── transcripts/         # stream_chat_YYYY-MM-DD.jsonl files
 │   ├── chromadb/            # ChromaDB persistence
-│   └── users.db             # auto-created on first run
+│   ├── users.db             # auto-created on first run
+│   └── movies.db            # auto-created on first run
 ├── deploy/
 │   ├── berries-ingest.service
 │   ├── berries-bot.service
