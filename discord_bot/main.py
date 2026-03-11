@@ -61,7 +61,7 @@ from shared.movie_db import (
     remove_suggestion,
     remove_watched,
 )
-from shared.user_db import init_db as init_user_db, link_discord, get_twitch_link, get_discord_for_twitch
+from shared.user_db import init_db as init_user_db, link_discord, get_twitch_link, get_discord_for_twitch, set_nickname
 
 # ── Logging ────────────────────────────────────────────────────────────────
 
@@ -570,6 +570,60 @@ async def twitch_link(interaction: discord.Interaction, twitch_username: str) ->
             log.warning("Failed to send to log channel %s: %s", DISCORD_LOG_CHANNEL_ID, e)
 
 
+@bot.tree.command(name="set-nickname", description="Set the nickname Berries uses for you")
+@app_commands.describe(nickname="What you'd like Berries to call you (max 32 characters)")
+async def set_nickname_cmd(interaction: discord.Interaction, nickname: str) -> None:
+    await interaction.response.defer(ephemeral=True)
+
+    discord_id = str(interaction.user.id)
+    t_login = get_twitch_link(discord_id)
+
+    if not t_login:
+        await interaction.followup.send(
+            "*tilts head* ...I don't recognise you yet. "
+            "Link your Twitch account first with `/twitch-link`, then come back.",
+            ephemeral=True,
+        )
+        return
+
+    nickname = nickname.strip()
+    if not nickname:
+        await interaction.followup.send(
+            "*blinks slowly* ...you have to actually give me a name to call you.",
+            ephemeral=True,
+        )
+        return
+
+    if len(nickname) > 32:
+        await interaction.followup.send(
+            "*squints* ...that's a bit long. Keep it under 32 characters.",
+            ephemeral=True,
+        )
+        return
+
+    set_nickname(t_login, nickname)
+
+    log.info(
+        "Nickname set: Discord user %s (%s) / Twitch %r → %r",
+        interaction.user, discord_id, t_login, nickname,
+    )
+
+    await interaction.followup.send(
+        f"*rustles quietly* ...understood. I'll call you **{nickname}** from now on.",
+        ephemeral=True,
+    )
+
+    if DISCORD_LOG_CHANNEL_ID:
+        try:
+            log_channel = bot.get_channel(DISCORD_LOG_CHANNEL_ID) or await bot.fetch_channel(DISCORD_LOG_CHANNEL_ID)
+            await log_channel.send(
+                f"**Nickname set** | {interaction.user.mention} (`{interaction.user}`) "
+                f"/ Twitch `{t_login}` → `{nickname}`"
+            )
+        except Exception as e:
+            log.warning("Failed to send to log channel %s: %s", DISCORD_LOG_CHANNEL_ID, e)
+
+
 # ── /movie subcommand group ─────────────────────────────────────────────────
 
 movie_group = app_commands.Group(name="movie", description="Movie night commands")
@@ -797,7 +851,7 @@ async def going_live(request: Request) -> dict:
 
     announcement = await _llm(
         f"TwigOtter just went live on Twitch! Stream title: '{stream_title}', category: '{category}'. "
-        f"Write a short in-character going-live announcement for the Discord server. "
+        f"Write a short in-character going-live announcement for the Discord server that tells readers what to expect based on the title and category. "
         f"Get people hyped to come watch. 2-3 sentences, stay in character."
     )
 
