@@ -491,10 +491,12 @@ async def ping(interaction: discord.Interaction) -> None:
 async def twitch_link(interaction: discord.Interaction, twitch_username: str) -> None:
     await interaction.response.defer(ephemeral=True)
 
+    import re
     twitch_username = twitch_username.lstrip("@").strip().lower()
-    if not twitch_username:
+    if not re.fullmatch(r"[a-z0-9_]{4,25}", twitch_username):
         await interaction.followup.send(
-            "*tilts head* ...that doesn't look like a valid Twitch username.",
+            "*tilts head* ...that doesn't look like a valid Twitch username. "
+            "Twitch usernames are 4–25 characters and only contain letters, numbers, and underscores.",
             ephemeral=True,
         )
         return
@@ -515,7 +517,7 @@ async def twitch_link(interaction: discord.Interaction, twitch_username: str) ->
         )
         return
 
-    result = link_discord(twitch_username, discord_id)
+    result = link_discord(twitch_username, discord_id, d_username=interaction.user.name)
     status = result["status"]
     previous = result.get("previous")
 
@@ -540,17 +542,14 @@ async def twitch_link(interaction: discord.Interaction, twitch_username: str) ->
         interaction.user, discord_id, twitch_username, status, previous,
     )
 
-    # TODO: post an audit message to #berries-log so mods can review link actions.
-    # Create a #berries-log channel, add DISCORD_LOG_CHANNEL_ID to .env, then do:
-    #
-    #   if DISCORD_LOG_CHANNEL_ID:
-    #       log_channel = bot.get_channel(DISCORD_LOG_CHANNEL_ID)
-    #       if log_channel:
-    #           action = "blocked (already claimed)" if status == "blocked" else status
-    #           await log_channel.send(
-    #               f"🔗 **Twitch link** | {interaction.user.mention} → `{twitch_username}` | status: `{status}`"
-    #               + (f" (was `{previous}`)" if previous else "")
-    #           )
+    if DISCORD_LOG_CHANNEL_ID and status != "already_linked":
+        log_channel = bot.get_channel(DISCORD_LOG_CHANNEL_ID)
+        if log_channel:
+            detail = f" (was `{previous}`)" if previous else ""
+            await log_channel.send(
+                f"**Twitch link** | {interaction.user.mention} (`{interaction.user}`) "
+                f"→ `{twitch_username}` | status: `{status}`{detail}"
+            )
 
 
 # ── /movie subcommand group ─────────────────────────────────────────────────
