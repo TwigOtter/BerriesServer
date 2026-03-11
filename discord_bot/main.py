@@ -36,6 +36,8 @@ from shared.config import (
     DISCORD_BOT_WEBHOOK_PORT,
     DISCORD_CHUNK_OVERLAP_MESSAGES,
     DISCORD_EVENT_ROLE_ID,
+    DISCORD_RULES_STICKER_ID,
+    DISCORD_STICKERS_ONLY_CHANNEL_IDS,
     DISCORD_STREAM_ROLE_ID,
     DISCORD_TOKEN,
     DISCORD_WATCH_CHANNEL_IDS,
@@ -103,6 +105,24 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # ── Webhook server (receives going-live events from ingest_api) ────────────
 
 webhook_app = FastAPI(title="Berries Discord Webhook")
+
+
+# ── Stickers-only enforcement ──────────────────────────────────────────────
+# Cached GuildSticker object so we don't fetch it on every violation.
+_rules_sticker_cache: discord.GuildSticker | None = None
+
+
+async def _get_rules_sticker(guild: discord.Guild) -> discord.GuildSticker | None:
+    global _rules_sticker_cache
+    if _rules_sticker_cache is not None:
+        return _rules_sticker_cache
+    if not DISCORD_RULES_STICKER_ID:
+        return None
+    try:
+        _rules_sticker_cache = await guild.fetch_sticker(DISCORD_RULES_STICKER_ID)
+    except Exception:
+        log.exception("Failed to fetch rules sticker %s", DISCORD_RULES_STICKER_ID)
+    return _rules_sticker_cache
 
 
 # ── Watch channel buffer ────────────────────────────────────────────────────
@@ -340,6 +360,29 @@ async def on_message(message: discord.Message) -> None:
             await _flush_watch_channel(channel_id, reason="token_limit")
 
     if message.author == bot.user:
+        return
+
+    # ── Stickers-only channel enforcement ──────────────────────────────────
+    if DISCORD_STICKERS_ONLY_CHANNEL_IDS and message.channel.id in DISCORD_STICKERS_ONLY_CHANNEL_IDS:
+        member = message.author if isinstance(message.author, discord.Member) else None
+        is_mod = member is not None and member.guild_permissions.manage_messages
+        if not is_mod and not message.stickers:
+            log.info(
+                "Deleting non-sticker message from %s in stickers-only channel %s",
+                message.author, message.channel.id,
+            )
+            try:
+                await message.delete()
+            except discord.Forbidden:
+                log.warning("Missing permissions to delete message in channel %s", message.channel.id)
+            except Exception:
+                log.exception("Failed to delete message in channel %s", message.channel.id)
+            sticker = await _get_rules_sticker(message.guild)
+            if sticker:
+                try:
+                    await message.channel.send(stickers=[sticker])
+                except Exception:
+                    log.exception("Failed to send rules sticker in channel %s", message.channel.id)
         return
 
     mentioned = bot.user in message.mentions and not message.mention_everyone

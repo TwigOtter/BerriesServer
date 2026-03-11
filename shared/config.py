@@ -68,6 +68,12 @@ _event_role_id = os.getenv("DISCORD_EVENT_ROLE_ID", "")
 DISCORD_EVENT_ROLE_ID: int | None = int(_event_role_id) if _event_role_id else None
 _stream_role_id = os.getenv("DISCORD_STREAM_ROLE_ID", "")
 DISCORD_STREAM_ROLE_ID: int | None = int(_stream_role_id) if _stream_role_id else None
+DISCORD_STICKERS_ONLY_CHANNEL_IDS: list[int] = [
+    int(x) for x in os.getenv("DISCORD_STICKERS_ONLY_CHANNEL_IDS", "").split(",")
+    if x.strip()
+]
+_rules_sticker_id = os.getenv("DISCORD_RULES_STICKER_ID", "")
+DISCORD_RULES_STICKER_ID: int | None = int(_rules_sticker_id) if _rules_sticker_id else None
 
 # ── OMDb API ───────────────────────────────────────────────────────────────
 OMDB_API_KEY = os.getenv("OMDB_API_KEY", "")
