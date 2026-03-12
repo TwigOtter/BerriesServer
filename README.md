@@ -164,7 +164,8 @@ Copy `.env.example` to `.env`. Key variables:
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama endpoint |
 | `OLLAMA_MODEL` | — | e.g. `llama3.1` |
 | `INGEST_SECRET` | — | Shared auth header between Streamer.bot and all services |
-| `STREAMERBOT_CALLBACK_URL` | — | Where Berries POSTs her replies |
+| `STREAMERBOT_CALLBACK_URL` | — | Where Berries POSTs his replies |
+| `STREAMERBOT_RESPONSE_ACTION_ID` | - | Action ID to send back to Streamer.bot |
 | `TWITCH_CHANNEL` | `twigotter` | Channel name for going-live announcement links |
 | `DISCORD_TOKEN` | — | Discord bot token |
 | `DISCORD_BERRIES_CHANNEL_WHITELIST_IDS` | — | Comma-separated channel IDs; redirect check skipped here |

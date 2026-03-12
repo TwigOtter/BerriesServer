@@ -85,6 +85,7 @@ GIPHY_API_KEY = os.getenv("GIPHY_API_KEY", "")
 
 # ── Twitch / Streamer.bot ──────────────────────────────────────────────────
 STREAMERBOT_CALLBACK_URL = os.getenv("STREAMERBOT_CALLBACK_URL", "http://127.0.0.1:7474")  # URL to POST responses back
+STREAMERBOT_RESPONSE_ACTION_ID = os.getenv("STREAMERBOT_RESPONSE_ACTION_ID", "20705cb6-be70-4755-8c31-8578cf710be8")  # Streamer.bot action to call with Berries' response; set in .env for flexibility but can also be sent in the request body
 TWITCH_CHANNEL = os.getenv("TWITCH_CHANNEL", "twigotter")
 
 # ── Databases ──────────────────────────────────────────────────────────────

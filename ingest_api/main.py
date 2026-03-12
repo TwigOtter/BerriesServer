@@ -40,6 +40,7 @@ from shared.config import (
     INGEST_SECRET,
     PERSONALITY_FILE,
     STREAMERBOT_CALLBACK_URL,
+    STREAMERBOT_RESPONSE_ACTION_ID,
     TRANSCRIPTS_DIR,
     USERS_DB_PATH,
 )
@@ -514,16 +515,21 @@ async def _generate_response(text: str) -> str:
 
     return await get_completion(system_prompt=system_prompt, user_message=text)
 
-async def _post_to_streamerbot(message: str, chat: bool = False, tts: bool = False) -> None:
+async def _post_to_streamerbot(
+    message: str, 
+    chat: bool = False, 
+    tts: bool = False, 
+    callback_url: str = STREAMERBOT_CALLBACK_URL, 
+    action_id: str = STREAMERBOT_RESPONSE_ACTION_ID
+) -> None:
     """
     POST Berries' response back to Streamer.bot.
     Streamer.bot reads %request.body.message%, %request.body.CHAT%, %request.body.TTS%
     and uses them to decide which actions to trigger.
     """
-    # TODO: add an action id in .env
     payload = {
         "action": {
-            "id": "20705cb6-be70-4755-8c31-8578cf710be8"
+            "id": action_id
         },
         "args": {
             "message": message,
@@ -533,11 +539,11 @@ async def _post_to_streamerbot(message: str, chat: bool = False, tts: bool = Fal
     }
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(STREAMERBOT_CALLBACK_URL, json=payload, timeout=5.0)
+            resp = await client.post(callback_url, json=payload, timeout=5.0)
             resp.raise_for_status()
         logger.info("Posted to Streamer.bot: %r (CHAT=%s, TTS=%s)", message, chat, tts)
     except Exception as e:
-        logger.warning("Failed to reach Streamer.bot at %s: %s", STREAMERBOT_CALLBACK_URL, e)
+        logger.warning("Failed to reach Streamer.bot at %s: %s", callback_url, e)
 
 
 @app.post("/event/mention")
@@ -555,7 +561,9 @@ async def receive_mention(
             "username": "the_detective",
             "CHAT": false,
             "TTS": false,
-            "log": true
+            "log": true,
+            "callback_url": "http://192.168.1.xxx:7474",  # optional override for where to POST the response (defaults to STREAMERBOT_CALLBACK_URL)
+            "action_id": "20705cb6-be70-4755-8c31-8578cf710be8"  # optional override for which Streamer.bot action to trigger (defaults to hardcoded ID in _post_to_streamerbot)
         }
 
     Test with:
@@ -573,6 +581,8 @@ async def receive_mention(
     chat = body.get("CHAT", False)
     tts = body.get("TTS", False)
     # log = body.get("log", True)  # TODO: use to suppress transcript writes
+    callback_url = body.get("callback_url", STREAMERBOT_CALLBACK_URL)
+    action_id = body.get("action_id", STREAMERBOT_RESPONSE_ACTION_ID)
 
     logger.info("/event/mention — username=%r text=%r CHAT=%s TTS=%s", username, text, chat, tts)
 
@@ -589,7 +599,7 @@ async def receive_mention(
         prompt = text
 
     response_text = await _generate_response(prompt)
-    await _post_to_streamerbot(response_text, chat=chat, tts=tts)
+    await _post_to_streamerbot(response_text, chat=chat, tts=tts, callback_url=callback_url, action_id=action_id)
 
     return {
         "message": response_text,
