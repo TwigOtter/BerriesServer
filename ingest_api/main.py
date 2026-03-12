@@ -514,17 +514,22 @@ async def _generate_response(text: str) -> str:
 
     return await get_completion(system_prompt=system_prompt, user_message=text)
 
-
 async def _post_to_streamerbot(message: str, chat: bool = False, tts: bool = False) -> None:
     """
     POST Berries' response back to Streamer.bot.
     Streamer.bot reads %request.body.message%, %request.body.CHAT%, %request.body.TTS%
     and uses them to decide which actions to trigger.
     """
+    # TODO: add an action id in .env
     payload = {
-        "message": message,
-        "CHAT": chat,
-        "TTS": tts,
+        "action": {
+            "id": "20705cb6-be70-4755-8c31-8578cf710be8"
+        },
+        "args": {
+            "message": message,
+            "CHAT": chat,
+            "TTS": tts
+        }
     }
     try:
         async with httpx.AsyncClient() as client:
