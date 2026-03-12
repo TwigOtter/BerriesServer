@@ -50,6 +50,7 @@ from shared.config import (
 )
 from shared.tokenizer import count_tokens
 from shared.llm_client import get_completion
+from shared.prompt_builder import build_system_prompt, ContextType
 from shared.movie_db import (
     add_suggestion,
     get_all_suggestions,
@@ -230,10 +231,14 @@ async def _get_channel_history(channel: discord.TextChannel, before: discord.Mes
         return ""
 
 
-async def _llm(user_message: str, system_suffix: str = "") -> str:
-    """Call the LLM with Berries' personality plus an optional extra system block."""
+async def _llm(
+    user_message: str,
+    context_type: ContextType = ContextType.DISCORD_MENTION,
+    context: str = "",
+) -> str:
+    """Call the LLM with Berries' personality and context-appropriate instructions."""
     personality = _load_personality()
-    system = personality + (f"\n\n{system_suffix}" if system_suffix else "")
+    system = build_system_prompt(personality, context_type, context)
     log.debug("LLM call — user_message: %.120r", user_message)
     response = await get_completion(system_prompt=system, user_message=user_message)
     log.debug("LLM response: %.120r", response)
@@ -446,7 +451,7 @@ async def on_message(message: discord.Message) -> None:
             history = await _get_channel_history(message.channel, before=message)
             system_suffix = "\n\n".join(filter(None, [context, history]))
             log.debug("Calling LLM for on_message")
-            response = await _llm(f"{message.author.display_name}: {content}", system_suffix=system_suffix)
+            response = await _llm(f"{message.author.display_name}: {content}", context=system_suffix)
             log.debug("LLM response for on_message: %.120r", response)
 
         await message.channel.send(response)
@@ -766,7 +771,7 @@ async def movie_announce(interaction: discord.Interaction, title: str, notes: st
     if notes:
         prompt += f" Additional notes about this movie from Twig: {notes}"
 
-    announcement = await _llm(prompt)
+    announcement = await _llm(prompt, context_type=ContextType.DISCORD_ANNOUNCE)
 
     # Ensure the movie exists in the DB before marking watched
     if not get_suggestion(imdb_id):
@@ -852,7 +857,8 @@ async def going_live(request: Request) -> dict:
     announcement = await _llm(
         f"TwigOtter just went live on Twitch! Stream title: '{stream_title}', category: '{category}'. "
         f"Write a short in-character going-live announcement for the Discord server that tells readers what to expect based on the title and category. "
-        f"Get people hyped to come watch. 2-3 sentences, stay in character."
+        f"Get people hyped to come watch. 2-3 sentences, stay in character.",
+        context_type=ContextType.DISCORD_ANNOUNCE,
     )
 
     gif_query = await _gif_search_query(f"Pick a GIF search term for a Twitch going-live announcement. Stream: '{stream_title}', category: '{category}'")

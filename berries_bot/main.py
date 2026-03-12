@@ -23,6 +23,7 @@ from shared.config import (
 )
 from shared.chroma_client import get_collection
 from shared.llm_client import get_completion
+from shared.prompt_builder import build_system_prompt, ContextType
 
 app = FastAPI(title="Berries Bot")
 
@@ -73,10 +74,7 @@ async def generate_response(trigger_text: str) -> str:
     personality = _load_personality()
     context = _assemble_context(trigger_text)
 
-    system_prompt = personality
-    if context:
-        system_prompt += f"\n\n{context}"
-
+    system_prompt = build_system_prompt(personality, ContextType.TWITCH_CHAT, context)
     return await get_completion(system_prompt=system_prompt, user_message=trigger_text)
 
 
