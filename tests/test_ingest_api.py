@@ -41,6 +41,7 @@ async def client(mock_collection, tmp_path):
         patch("shared.user_db.upsert_user"),
         patch("ingest_api.main.USERS_DB_PATH", tmp_path / "users.db"),
         patch("ingest_api.main.TRANSCRIPTS_DIR", tmp_path / "transcripts"),
+        patch("ingest_api.main.INGEST_SECRET", ""),
     ]
     for p in patches:
         p.start()
