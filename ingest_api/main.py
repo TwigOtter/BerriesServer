@@ -44,6 +44,7 @@ from shared.config import (
     TRANSCRIPTS_DIR,
     USERS_DB_PATH,
 )
+from shared.prompt_builder import build_system_prompt, ContextType
 
 
 def get_collection():
@@ -476,7 +477,7 @@ def _load_personality() -> str:
     return "You are Berries, a spooky and playful forest demon on a Twitch stream. Keep responses short and in character."
 
 
-async def _generate_response(text: str) -> str:
+async def _generate_response(text: str, tts: bool = False) -> str:
     """
     Build context and call the LLM to generate Berries' response.
     Injects short-term memory (recent deque chunks) and long-term memory
@@ -486,7 +487,8 @@ async def _generate_response(text: str) -> str:
     """
     from shared.llm_client import get_completion
 
-    system_prompt = _load_personality()
+    context_type = ContextType.TWITCH_TTS if tts else ContextType.TWITCH_CHAT
+    context_parts: list[str] = []
 
     # Long-term memory: semantically relevant past chunks
     try:
@@ -494,12 +496,11 @@ async def _generate_response(text: str) -> str:
         results = collection.query(query_texts=[text], n_results=CHROMA_N_RESULTS)
         docs = results.get("documents", [[]])[0]
         if docs:
-            context_block = "\n---\n".join(docs)
-            system_prompt += (
-                "\n\nRELEVANT PAST CONTEXT:\n"
+            context_parts.append(
+                "RELEVANT PAST CONTEXT:\n"
                 "The following excerpts from past stream logs may be relevant to the viewer's message. "
                 "Use them to inform your response if helpful — do not quote them directly.\n"
-                + context_block
+                + "\n---\n".join(docs)
             )
     except Exception as e:
         logger.warning("ChromaDB query failed (no context injected): %s", e)
@@ -507,12 +508,17 @@ async def _generate_response(text: str) -> str:
     # Short-term memory: last 2 chunks from current session
     if recent_chunks:
         recent_text = "\n---\n".join(c["text"] for c in recent_chunks)
-        system_prompt += (
-            "\n\nRECENT CONVERSATION:\n"
+        context_parts.append(
+            "RECENT CONVERSATION:\n"
             "The most recent chat activity from this stream, for continuity:\n"
             + recent_text
         )
 
+    system_prompt = build_system_prompt(
+        _load_personality(),
+        context_type,
+        "\n\n".join(context_parts),
+    )
     return await get_completion(system_prompt=system_prompt, user_message=text)
 
 async def _post_to_streamerbot(
@@ -598,7 +604,7 @@ async def receive_mention(
     else:
         prompt = text
 
-    response_text = await _generate_response(prompt)
+    response_text = await _generate_response(prompt, tts=tts)
     await _post_to_streamerbot(response_text, chat=chat, tts=tts, callback_url=callback_url, action_id=action_id)
 
     return {
