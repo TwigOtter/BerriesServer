@@ -50,6 +50,15 @@ def get_collection():
     return _get_collection()
 
 
+def _get_nickname(t_login: str) -> str:
+    """Return the user's nickname if set, otherwise their t_login."""
+    from shared.user_db import get_user
+    user = get_user(t_login)
+    if user and user.get("nickname"):
+        return user["nickname"]
+    return t_login
+
+
 def count_tokens(text: str) -> int:
     from shared.tokenizer import count_tokens as _count_tokens
     return _count_tokens(text)
@@ -537,7 +546,8 @@ async def receive_mention(
 
     Expected body:
         {
-            "text": "A viewer named Missoula (username: the_detective, call them "Missoula") says: {Hey Berries, what's Twig's favorite game?} Please respond directly to them.",
+            "text": "Hey Berries, what's Twig's favorite game?",
+            "username": "the_detective",
             "CHAT": false,
             "TTS": false,
             "log": true
@@ -554,16 +564,26 @@ async def receive_mention(
     body = await request.json()
 
     text = body.get("text", "")
+    username = body.get("username", "")
     chat = body.get("CHAT", False)
     tts = body.get("TTS", False)
     # log = body.get("log", True)  # TODO: use to suppress transcript writes
 
-    logger.info("/event/mention — text=%r CHAT=%s TTS=%s", text, chat, tts)
+    logger.info("/event/mention — username=%r text=%r CHAT=%s TTS=%s", username, text, chat, tts)
 
     if not text:
         return {"status": "ok", "triggered": False}
 
-    response_text = await _generate_response(text)
+    if username:
+        nickname = _get_nickname(username)
+        prompt = (
+            f"A viewer named {nickname} (username: {username}, call them '{nickname}') "
+            f'says: "{text}" -- Please respond directly to them.'
+        )
+    else:
+        prompt = text
+
+    response_text = await _generate_response(prompt)
     await _post_to_streamerbot(response_text, chat=chat, tts=tts)
 
     return {
