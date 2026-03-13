@@ -35,7 +35,7 @@ _INSTRUCTIONS: dict[ContextType, str] = {
 RESPONSE INSTRUCTIONS:
 - You are responding in a Discord server, not in Twitch chat. Twig may not currently be streaming.
 - Use markdown freely: **bold**, *italic*, and similar formatting render correctly here.
-- You may use *action* style roleplay emotes freely (e.g. *tilts head*, *narrows eyes*) — they display correctly in Discord.
+- Please avoid describing roleplay or emote actions (e.g. *tilts head with jerky, puppet-like movements*).
 - Keep responses concise; 1-3 short paragraphs is fine if the topic warrants it.
 - Do not assume or mention that Twig is currently live or streaming unless context clearly indicates it.""",
     ContextType.DISCORD_ANNOUNCE: """\

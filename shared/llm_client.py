@@ -16,32 +16,32 @@ from shared.config import (
 )
 
 
-async def get_completion(system_prompt: str, user_message: str) -> str:
+async def get_completion(system_prompt: str, user_message: str, max_tokens: int = 256) -> str:
     """
     Send a prompt to the configured LLM backend and return the response text.
     Raises ValueError if LLM_BACKEND is not recognized.
     """
     if LLM_BACKEND == "anthropic":
-        return await _anthropic_completion(system_prompt, user_message)
+        return await _anthropic_completion(system_prompt, user_message, max_tokens)
     elif LLM_BACKEND == "ollama":
-        return await _ollama_completion(system_prompt, user_message)
+        return await _ollama_completion(system_prompt, user_message, max_tokens)
     else:
         raise ValueError(f"Unknown LLM_BACKEND: {LLM_BACKEND!r}. Use 'anthropic' or 'ollama'.")
 
 
-async def _anthropic_completion(system_prompt: str, user_message: str) -> str:
+async def _anthropic_completion(system_prompt: str, user_message: str, max_tokens: int) -> str:
     import anthropic
     client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     message = await client.messages.create(
         model=ANTHROPIC_MODEL,
-        max_tokens=256,
+        max_tokens=max_tokens,
         system=system_prompt,
         messages=[{"role": "user", "content": user_message}],
     )
     return message.content[0].text
 
 
-async def _ollama_completion(system_prompt: str, user_message: str) -> str:
+async def _ollama_completion(system_prompt: str, user_message: str, max_tokens: int) -> str:
     import httpx
     payload = {
         "model": OLLAMA_MODEL,
@@ -50,6 +50,7 @@ async def _ollama_completion(system_prompt: str, user_message: str) -> str:
             {"role": "user", "content": user_message},
         ],
         "stream": False,
+        "options": {"num_predict": max_tokens},
     }
     async with httpx.AsyncClient() as client:
         resp = await client.post(

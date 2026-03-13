@@ -240,7 +240,7 @@ async def _llm(
     personality = _load_personality()
     system = build_system_prompt(personality, context_type, context)
     log.debug("LLM call — user_message: %.120r", user_message)
-    response = await get_completion(system_prompt=system, user_message=user_message)
+    response = await get_completion(system_prompt=system, user_message=user_message, max_tokens=600)
     log.debug("LLM response: %.120r", response)
     return response
 
