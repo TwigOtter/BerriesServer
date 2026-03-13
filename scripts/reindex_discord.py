@@ -110,6 +110,7 @@ def chunk_messages(messages: list[dict], channel_id: int, channel_name: str, gui
 
         buf_text = "\n".join(e["text"] for e in buffer)
         if count_tokens(buf_text) >= CHUNK_TOKEN_LIMIT:
+            print(f"    Flushing chunk with {len(buffer)} messages (tokens: {count_tokens(buf_text)})")
             chunk = flush(buffer)
             if chunk:
                 chunks.append(chunk)
