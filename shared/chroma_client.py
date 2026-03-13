@@ -33,6 +33,9 @@ class _NomicEmbeddingFunction:
             cache_folder=cache_folder,
         )
 
+    def name(self) -> str:
+        return "nomic-embed-text-v1"
+
     def __call__(self, input: list[str]) -> list[list[float]]:
         prefixed = ["search_document: " + text for text in input]
         return self._model.encode(prefixed, normalize_embeddings=True).tolist()

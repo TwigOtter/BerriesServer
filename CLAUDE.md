@@ -50,7 +50,7 @@ Streamer.bot → ingest_api (8000) → ChromaDB + SQLite + JSONL transcripts
 ### Shared Libraries (`shared/`)
 - `config.py` — All config from `.env`; every service imports from here.
 - `llm_client.py` — Async abstraction over Anthropic API or Ollama (swapped via `LLM_BACKEND` env var).
-- `chroma_client.py` — Singleton ChromaDB client using local `all-MiniLM-L6-v2` embeddings.
+- `chroma_client.py` — Singleton ChromaDB client using local `nomic-ai/nomic-embed-text-v1` embeddings (8192-token limit, requires `einops`).
 - `user_db.py` / `movie_db.py` — SQLite wrappers for user profiles and movie suggestions/history.
 
 ## Configuration

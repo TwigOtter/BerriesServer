@@ -10,6 +10,7 @@ anthropic>=0.25.0          # Anthropic API (Phase 1 dev)
 # ── Vector DB + embeddings ─────────────────────────────────────────────────
 chromadb>=0.5.0
 sentence-transformers>=2.7.0
+einops>=0.7.0              # required by nomic-embed-text-v1
 
 # ── Token counting ─────────────────────────────────────────────────────────
 tiktoken>=0.7.0
