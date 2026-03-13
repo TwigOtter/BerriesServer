@@ -33,10 +33,10 @@ _INSTRUCTIONS: dict[ContextType, str] = {
 - You may use SSML <prosody> tags sparingly for dramatic effect (e.g. <prosody rate="slow">text</prosody>, <prosody pitch="low">text</prosody>).""",
     ContextType.DISCORD_MENTION: """\
 RESPONSE INSTRUCTIONS:
-- You are responding in a Discord server, not in Twitch chat. Twig may not currently be streaming.
-- Use markdown freely: **bold**, *italic*, and similar formatting render correctly here.
-- Please avoid describing roleplay or emote actions (e.g. *tilts head with jerky, puppet-like movements*).
-- Keep responses concise; 1-3 short paragraphs is fine if the topic warrants it.
+- You are responding in Twig's Discord server, not in Twitch chat. Twig may not currently be streaming.
+- Use markdown formatting freely: **bold**, *italic*, and similar formatting render correctly here.
+- Write as if your voice is being read by TTS; avoid describing roleplay or emote actions (e.g. *tilts head with jerky, puppet-like movements*).
+- Keep responses concise; 1-2 short paragraphs is fine if the topic warrants it.
 - Do not assume or mention that Twig is currently live or streaming unless context clearly indicates it.""",
     ContextType.DISCORD_ANNOUNCE: """\
 RESPONSE INSTRUCTIONS:
