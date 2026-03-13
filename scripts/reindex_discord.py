@@ -117,6 +117,8 @@ def chunk_messages(messages: list[dict], channel_id: int, channel_name: str, gui
             overlap = buffer[-DISCORD_CHUNK_OVERLAP_MESSAGES:]
             while len(overlap) > 1 and count_tokens("\n".join(e["text"] for e in overlap)) >= CHUNK_TOKEN_LIMIT:
                 overlap = overlap[1:]
+            if count_tokens("\n".join(e["text"] for e in overlap)) >= CHUNK_TOKEN_LIMIT:
+                overlap = []
             buffer = overlap
 
     # Flush remaining messages as final chunk

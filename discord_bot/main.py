@@ -176,9 +176,13 @@ async def _flush_watch_channel(channel_id: int, reason: str) -> None:
 
     # Keep last DISCORD_CHUNK_OVERLAP_MESSAGES entries as seed for next chunk,
     # but trim from the front if the overlap itself already exceeds the token limit.
+    # If even a single entry exceeds the limit (e.g. a long Berries response), clear
+    # the overlap entirely to avoid cascading single-message flushes.
     overlap = buf[-DISCORD_CHUNK_OVERLAP_MESSAGES:]
     while len(overlap) > 1 and count_tokens("\n".join(e["text"] for e in overlap)) >= CHUNK_TOKEN_LIMIT:
         overlap = overlap[1:]
+    if count_tokens("\n".join(e["text"] for e in overlap)) >= CHUNK_TOKEN_LIMIT:
+        overlap = []
     _watch_buffers[channel_id] = overlap
 
 
