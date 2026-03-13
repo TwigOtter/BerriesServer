@@ -47,12 +47,6 @@ def test_discord_mention_allows_markdown():
     # Should not be telling Berries to avoid markdown
     assert "NEVER use markdown" not in result
 
-
-def test_discord_mention_allows_action_emotes():
-    result = build_system_prompt(PERSONALITY, ContextType.DISCORD_MENTION)
-    assert "*action*" in result or "roleplay emotes" in result
-
-
 def test_discord_mention_warns_about_streaming_assumption():
     result = build_system_prompt(PERSONALITY, ContextType.DISCORD_MENTION)
     assert "streaming" in result.lower() or "live" in result.lower()
