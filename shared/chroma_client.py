@@ -40,6 +40,10 @@ class _NomicEmbeddingFunction:
         prefixed = ["search_document: " + text for text in input]
         return self._model.encode(prefixed, normalize_embeddings=True).tolist()
 
+    def embed_query(self, input: list[str]) -> list[list[float]]:
+        prefixed = ["search_query: " + text for text in input]
+        return self._model.encode(prefixed, normalize_embeddings=True).tolist()
+
 
 def get_client() -> chromadb.ClientAPI:
     global _client
