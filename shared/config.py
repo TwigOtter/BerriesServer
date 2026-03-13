@@ -35,7 +35,7 @@ CHROMA_N_RESULTS = int(os.getenv("CHROMA_N_RESULTS", "4"))       # chunks to ret
 
 # ── Embedding model ────────────────────────────────────────────────────────
 # Uses sentence-transformers locally — no data leaves the box.
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1")
 
 # ── LLM backend ────────────────────────────────────────────────────────────
 # "anthropic" for Anthropic API, "ollama" for local Ollama instance.
