@@ -234,6 +234,13 @@ async def _get_channel_history(channel: discord.TextChannel, before: discord.Mes
         log.exception("Failed to fetch channel history for channel %s", channel.id)
         return ""
 
+def cleanup_response(text: str) -> str:
+    """Clean up LLM response by stripping out any instances of italicized roleplay and double line breaks."""
+    import re
+    # Remove lines that are entirely italicized roleplay actions (e.g. "*does a thing*")
+    text = re.sub(r"^\*[^*\n]+\*\s*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\n{2,}", "\n", text)  # Replace 2 or more line breaks with just 1
+    return text.strip()
 
 async def _llm(
     user_message: str,
@@ -246,7 +253,7 @@ async def _llm(
     log.debug("LLM call — user_message: %.120r", user_message)
     response = await get_completion(system_prompt=system, user_message=user_message, max_tokens=600)
     log.debug("LLM response: %.120r", response)
-    return response
+    return cleanup_response(response)
 
 
 async def _omdb_search(title: str) -> dict | None:
