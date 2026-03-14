@@ -18,6 +18,7 @@ import logging.handlers
 import random
 import uuid
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import discord
 import httpx
@@ -62,7 +63,7 @@ from shared.movie_db import (
     remove_suggestion,
     remove_watched,
 )
-from shared.user_db import init_db as init_user_db, link_discord, get_twitch_link, get_discord_for_twitch, set_nickname
+from shared.user_db import init_db as init_user_db, link_discord, get_twitch_link, get_discord_for_twitch, set_nickname, get_user
 
 # ── Logging ────────────────────────────────────────────────────────────────
 
@@ -462,7 +463,14 @@ async def on_message(message: discord.Message) -> None:
             history = await _get_channel_history(message.channel, before=message)
             system_suffix = "\n\n".join(filter(None, [context, history]))
             log.debug("Calling LLM for on_message")
-            response = await _llm(f"{message.author.display_name}: {content}", context=system_suffix)
+            user_display_name = message.author.display_name
+            t_login = get_twitch_link(str(message.author.id))
+            _db_user = get_user(t_login) if t_login else None
+            user_nickname = (_db_user.get("nickname") or user_display_name) if _db_user else user_display_name
+            user_nickname_str = f" (nickname: {user_nickname})" if user_nickname != user_display_name else ""
+            date_time_str = message.created_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d %H:%M:%S")
+            user_msg = f"(time: {date_time_str}) {user_display_name}{user_nickname_str} said: {content}"
+            response = await _llm(user_msg, context=system_suffix)
             log.debug("LLM response for on_message: %.120r", response)
 
         await message.channel.send(response)
