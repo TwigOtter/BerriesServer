@@ -468,7 +468,7 @@ async def on_message(message: discord.Message) -> None:
             _db_user = get_user(t_login) if t_login else None
             user_nickname = (_db_user.get("nickname") or user_display_name) if _db_user else user_display_name
             user_nickname_str = f" (nickname: {user_nickname})" if user_nickname != user_display_name else ""
-            date_time_str = message.created_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d %H:%M:%S")
+            date_time_str = message.created_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("America/Chicago")).strftime("%A, %Y-%m-%d %H:%M:%S")
             user_msg = f"(time: {date_time_str} [US Central Time]) {user_display_name}{user_nickname_str} said: {content}"
             response = await _llm(user_msg, context=system_suffix)
             log.debug("LLM response for on_message: %.120r", response)
