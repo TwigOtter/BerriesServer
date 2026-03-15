@@ -249,8 +249,16 @@ async def _get_chroma_context_with_assistant(
     return "", []
 
 
-async def _get_channel_history(channel: discord.TextChannel, before: discord.Message, limit: int = 20) -> str:
-    """Fetch the last `limit` messages from `channel` before `message` and format them."""
+async def _get_channel_history(
+    channel: discord.TextChannel,
+    before: discord.Message,
+    limit: int = 20,
+    max_tokens: int = 1028,
+) -> str:
+    """
+    Fetch the last `limit` messages from `channel` before `message` and format them.
+    Trims oldest messages until the block is under `max_tokens` (estimated at 4 chars/token).
+    """
     try:
         messages = [m async for m in channel.history(limit=limit, before=before)]
         messages.reverse()
@@ -259,6 +267,10 @@ async def _get_channel_history(channel: discord.TextChannel, before: discord.Mes
             for m in messages
             if m.content
         ]
+        # Trim from oldest until estimated token count fits
+        char_budget = max_tokens * 4
+        while lines and sum(len(l) for l in lines) > char_budget:
+            lines.pop(0)
         if not lines:
             return ""
         return (

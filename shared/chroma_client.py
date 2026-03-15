@@ -69,7 +69,7 @@ def get_collection():
 def query_chroma_multi(queries: list[str], n_results: int = CHROMA_N_RESULTS) -> list[str]:
     """
     Run all queries against ChromaDB in one call, deduplicate by chunk ID,
-    and return unique document texts in first-seen order.
+    and return at most `n_results` unique document texts in first-seen order.
     """
     collection = get_collection()
     results = collection.query(query_texts=queries, n_results=n_results)
@@ -80,4 +80,4 @@ def query_chroma_multi(queries: list[str], n_results: int = CHROMA_N_RESULTS) ->
             if chunk_id not in seen_ids:
                 seen_ids.add(chunk_id)
                 docs.append(doc)
-    return docs
+    return docs[:n_results]
