@@ -9,11 +9,59 @@ Usage:
     reply = await get_completion(system_prompt="You are Berries...", user_message="say hi")
 """
 
+import logging
+
 from shared.config import (
     LLM_BACKEND,
     ANTHROPIC_API_KEY, ANTHROPIC_MODEL,
     OLLAMA_BASE_URL, OLLAMA_MODEL,
 )
+
+_log = logging.getLogger("llm_client")
+
+_REWRITER_MODEL = "claude-haiku-4-5-20251001"
+
+
+async def rewrite_queries(
+    message: str,
+    recent_context: str,
+    username: str = "a viewer",
+) -> list[str] | None:
+    """
+    Use Haiku to rewrite `message` into 2-3 focused ChromaDB search queries.
+    Returns None if the model says SKIP (no retrieval needed).
+    Falls back to [message] on any error or if ANTHROPIC_API_KEY is not set.
+    """
+    if not ANTHROPIC_API_KEY:
+        return [message]
+
+    prompt = (
+        f"Given this recent chat context:\n{recent_context}\n\n"
+        f"And this message from {username}:\n\"{message}\"\n\n"
+        "Generate 2-3 distinct search queries (one per line, no labels or punctuation) "
+        "that capture what information about Twig or the Hollow Oak setting would be "
+        "most useful to retrieve in order to respond well to this message. "
+        "If the message needs no factual retrieval (e.g. pure banter, greetings), "
+        "return only the word: SKIP"
+    )
+
+    try:
+        import anthropic
+        client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        msg = await client.messages.create(
+            model=_REWRITER_MODEL,
+            max_tokens=128,
+            system="You generate ChromaDB search queries. Follow the instructions exactly.",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = msg.content[0].text.strip()
+        if raw.upper() == "SKIP":
+            return None
+        queries = [q.strip() for q in raw.splitlines() if q.strip()]
+        return queries if queries else [message]
+    except Exception as e:
+        _log.warning("rewrite_queries failed, falling back to raw message: %s", e)
+        return [message]
 
 
 async def get_completion(system_prompt: str, user_message: str, max_tokens: int = 256) -> str:

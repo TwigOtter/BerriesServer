@@ -35,7 +35,6 @@ from shared.config import (
     CHUNK_OVERLAP_SEC,
     CHUNK_TIMEOUT_SEC,
     CHUNK_TOKEN_LIMIT,
-    CHROMA_N_RESULTS,
     DISCORD_BOT_WEBHOOK_URL,
     INGEST_SECRET,
     PERSONALITY_FILE,
@@ -477,33 +476,40 @@ def _load_personality() -> str:
     return "You are Berries, a spooky and playful forest demon on a Twitch stream. Keep responses short and in character."
 
 
-async def _generate_response(text: str, tts: bool = False) -> str:
+async def _generate_response(text: str, tts: bool = False, query: str = "", username: str = "") -> str:
     """
     Build context and call the LLM to generate Berries' response.
     Injects short-term memory (recent deque chunks) and long-term memory
     (semantically relevant past chunks from ChromaDB) into the system prompt.
     The caller is responsible for fully forming the user message text, including
     any viewer context such as nicknames or first-time welcome framing.
+
+    query: raw user message before nickname framing (used as ChromaDB search query).
+           Falls back to text if not provided.
+    username: raw Twitch username, passed to the query rewriter for context.
     """
-    from shared.llm_client import get_completion
+    from shared.llm_client import get_completion, rewrite_queries
+    from shared.chroma_client import query_chroma_multi
 
     context_type = ContextType.TWITCH_TTS if tts else ContextType.TWITCH_CHAT
     context_parts: list[str] = []
 
-    # Long-term memory: semantically relevant past chunks
+    # Long-term memory: semantically relevant past chunks (with query rewriting)
     try:
-        collection = get_collection()
-        results = collection.query(query_texts=[text], n_results=CHROMA_N_RESULTS)
-        docs = results.get("documents", [[]])[0]
-        if docs:
-            context_parts.append(
-                "RELEVANT PAST CONTEXT:\n"
-                "The following excerpts from past stream logs may be relevant to the viewer's message. "
-                "Use them to inform your response if helpful — do not quote them directly.\n"
-                + "\n---\n".join(docs)
-            )
+        recent_context = "\n".join(e["text"] for e in _buffer[-15:])
+        search_queries = await rewrite_queries(query or text, recent_context, username or "a viewer")
+
+        if search_queries is not None:  # None means SKIP — no retrieval needed
+            docs = query_chroma_multi(search_queries)
+            if docs:
+                context_parts.append(
+                    "RELEVANT PAST CONTEXT:\n"
+                    "The following excerpts from past stream logs may be relevant to the viewer's message. "
+                    "Use them to inform your response if helpful — do not quote them directly.\n"
+                    + "\n---\n".join(docs)
+                )
     except Exception as e:
-        logger.warning("ChromaDB query failed (no context injected): %s", e)
+        logger.warning("Query rewriting/ChromaDB failed (no context injected): %s", e)
 
     # Short-term memory: last 2 chunks from current session
     if recent_chunks:
@@ -604,7 +610,7 @@ async def receive_mention(
     else:
         prompt = text
 
-    response_text = await _generate_response(prompt, tts=tts)
+    response_text = await _generate_response(prompt, tts=tts, query=text, username=username)
     await _post_to_streamerbot(response_text, chat=chat, tts=tts, callback_url=callback_url, action_id=action_id)
 
     return {

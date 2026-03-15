@@ -30,7 +30,6 @@ from fastapi import FastAPI, Request
 from shared.chroma_client import get_collection
 from shared.config import (
     CHUNK_TOKEN_LIMIT,
-    CHROMA_N_RESULTS,
     DISCORD_ANNOUNCE_CHANNEL_ID,
     DISCORD_BERRIES_CHANNEL_WHITELIST_IDS,
     DISCORD_BERRIES_CHAT_CHANNEL_ID,
@@ -196,12 +195,21 @@ def _load_personality() -> str:
     return "You are Berries, a playful forest demon."
 
 
-def _get_chroma_context(query: str) -> str:
+async def _get_chroma_context(query: str, recent_context: str = "", username: str = "") -> str:
     try:
-        collection = get_collection()
-        results = collection.query(query_texts=[query], n_results=CHROMA_N_RESULTS)
-        docs = results.get("documents", [[]])[0]
-        log.debug("ChromaDB returned %d doc(s) for query: %.80r", len(docs), query)
+        from shared.llm_client import rewrite_queries
+        from shared.chroma_client import query_chroma_multi
+
+        search_queries = await rewrite_queries(query, recent_context, username or "a Discord user")
+        if search_queries is None:  # SKIP — no retrieval needed
+            log.debug("rewrite_queries returned SKIP for query: %.80r", query)
+            return ""
+
+        docs = query_chroma_multi(search_queries)
+        log.debug(
+            "ChromaDB returned %d unique doc(s) for %d rewritten quer(ies): %.80r",
+            len(docs), len(search_queries), query,
+        )
         if docs:
             return (
                 "RELEVANT PAST CONTEXT:\n"
@@ -459,11 +467,11 @@ async def on_message(message: discord.Message) -> None:
 
     try:
         async with message.channel.typing():
-            context = _get_chroma_context(content)
+            user_display_name = message.author.display_name
             history = await _get_channel_history(message.channel, before=message)
+            context = await _get_chroma_context(content, recent_context=history, username=user_display_name)
             system_suffix = "\n\n".join(filter(None, [context, history]))
             log.debug("Calling LLM for on_message")
-            user_display_name = message.author.display_name
             t_login = get_twitch_link(str(message.author.id))
             _db_user = get_user(t_login) if t_login else None
             user_nickname = (_db_user.get("nickname") or user_display_name) if _db_user else user_display_name
