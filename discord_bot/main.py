@@ -301,7 +301,7 @@ async def _llm(
     log.debug("LLM call — user_message: %.120r", user_message)
     response = await get_completion(system_prompt=system, user_message=user_message, max_tokens=600)
     log.debug("LLM response: %.120r", response)
-    return response
+    return cleanup_response(response)
 
 
 async def _omdb_search(title: str) -> dict | None:
