@@ -195,7 +195,15 @@ def _load_personality() -> str:
     return "You are Berries, a playful forest demon."
 
 
-async def _get_chroma_context(query: str, recent_context: str = "", username: str = "") -> str:
+async def _get_chroma_context(
+    query: str,
+    recent_context: str = "",
+    username: str = "",
+) -> tuple[str, list[str] | None]:
+    """
+    Returns (context_block, search_queries).
+    search_queries is None if the rewriter returned SKIP, or a list of strings otherwise.
+    """
     try:
         from shared.llm_client import rewrite_queries
         from shared.chroma_client import query_chroma_multi
@@ -203,7 +211,7 @@ async def _get_chroma_context(query: str, recent_context: str = "", username: st
         search_queries = await rewrite_queries(query, recent_context, username or "a Discord user")
         if search_queries is None:  # SKIP — no retrieval needed
             log.debug("rewrite_queries returned SKIP for query: %.80r", query)
-            return ""
+            return "", None
 
         docs = query_chroma_multi(search_queries)
         log.debug(
@@ -216,10 +224,11 @@ async def _get_chroma_context(query: str, recent_context: str = "", username: st
                 "The following excerpts from past stream logs may be relevant to the conversation. "
                 "Use them to inform your response if helpful — do not quote them directly.\n"
                 + "\n---\n".join(docs)
-            )
+            ), search_queries
+        return "", search_queries
     except Exception:
         log.exception("ChromaDB query failed")
-    return ""
+    return "", []
 
 
 async def _get_channel_history(channel: discord.TextChannel, before: discord.Message, limit: int = 20) -> str:
@@ -469,7 +478,7 @@ async def on_message(message: discord.Message) -> None:
         async with message.channel.typing():
             user_display_name = message.author.display_name
             history = await _get_channel_history(message.channel, before=message)
-            context = await _get_chroma_context(content, recent_context=history, username=user_display_name)
+            context, search_queries = await _get_chroma_context(content, recent_context=history, username=user_display_name)
             system_suffix = "\n\n".join(filter(None, [context, history]))
             log.debug("Calling LLM for on_message")
             t_login = get_twitch_link(str(message.author.id))
@@ -480,6 +489,17 @@ async def on_message(message: discord.Message) -> None:
             user_msg = f"(datetime: {date_time_str} [US Central Time]) {user_display_name}{user_nickname_str} said: {content}"
             response = await _llm(user_msg, context=system_suffix)
             log.debug("LLM response for on_message: %.120r", response)
+
+            from shared.call_logger import log_llm_call
+            log_llm_call(
+                service="discord",
+                username=user_display_name,
+                raw_message=content,
+                rewrite_queries=search_queries,
+                system_prompt=build_system_prompt(_load_personality(), ContextType.DISCORD_MENTION, system_suffix),
+                user_message=user_msg,
+                response=response,
+            )
 
         await message.channel.send(response)
         log.info("Sent response to %s in channel %s", message.author, message.channel.id)

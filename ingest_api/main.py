@@ -495,9 +495,11 @@ async def _generate_response(text: str, tts: bool = False, query: str = "", user
     context_parts: list[str] = []
 
     # Long-term memory: semantically relevant past chunks (with query rewriting)
+    _logged_queries: list[str] | None = []  # track for call log; None = SKIP
     try:
         recent_context = "\n".join(e["text"] for e in _buffer[-15:])
         search_queries = await rewrite_queries(query or text, recent_context, username or "a viewer")
+        _logged_queries = search_queries  # None means SKIP
 
         if search_queries is not None:  # None means SKIP — no retrieval needed
             docs = query_chroma_multi(search_queries)
@@ -525,7 +527,20 @@ async def _generate_response(text: str, tts: bool = False, query: str = "", user
         context_type,
         "\n\n".join(context_parts),
     )
-    return await get_completion(system_prompt=system_prompt, user_message=text)
+    response = await get_completion(system_prompt=system_prompt, user_message=text)
+
+    from shared.call_logger import log_llm_call
+    log_llm_call(
+        service="twitch",
+        username=username or "",
+        raw_message=query or text,
+        rewrite_queries=_logged_queries,
+        system_prompt=system_prompt,
+        user_message=text,
+        response=response,
+    )
+
+    return response
 
 async def _post_to_streamerbot(
     message: str, 
