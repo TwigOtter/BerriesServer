@@ -12,7 +12,7 @@ Usage:
 """
 
 import chromadb
-from shared.config import CHROMADB_DIR, CHROMA_COLLECTION, DATA_DIR
+from shared.config import CHROMADB_DIR, CHROMA_COLLECTION, DATA_DIR, CHROMA_N_RESULTS
 
 _client: chromadb.ClientAPI | None = None
 _collection = None
@@ -64,3 +64,20 @@ def get_collection():
             embedding_function=ef,
         )
     return _collection
+
+
+def query_chroma_multi(queries: list[str], n_results: int = CHROMA_N_RESULTS) -> list[str]:
+    """
+    Run all queries against ChromaDB in one call, deduplicate by chunk ID,
+    and return unique document texts in first-seen order.
+    """
+    collection = get_collection()
+    results = collection.query(query_texts=queries, n_results=n_results)
+    seen_ids: set[str] = set()
+    docs: list[str] = []
+    for id_list, doc_list in zip(results.get("ids", []), results.get("documents", [])):
+        for chunk_id, doc in zip(id_list, doc_list):
+            if chunk_id not in seen_ids:
+                seen_ids.add(chunk_id)
+                docs.append(doc)
+    return docs

@@ -195,7 +195,6 @@ def _load_personality() -> str:
         return PERSONALITY_FILE.read_text(encoding="utf-8").strip()
     return "You are Berries, a playful forest demon."
 
-
 def _get_chroma_context(query: str) -> str:
     try:
         collection = get_collection()
@@ -212,6 +211,42 @@ def _get_chroma_context(query: str) -> str:
     except Exception:
         log.exception("ChromaDB query failed")
     return ""
+
+
+async def _get_chroma_context_with_assistant(
+    query: str,
+    recent_context: str = "",
+    username: str = "",
+) -> tuple[str, list[str] | None]:
+    """
+    Returns (context_block, search_queries).
+    search_queries is None if the rewriter returned SKIP, or a list of strings otherwise.
+    """
+    try:
+        from shared.llm_client import rewrite_queries
+        from shared.chroma_client import query_chroma_multi
+
+        search_queries = await rewrite_queries(query, recent_context, username or "a Discord user")
+        if search_queries is None:  # SKIP — no retrieval needed
+            log.debug("rewrite_queries returned SKIP for query: %.80r", query)
+            return "", None
+
+        docs = query_chroma_multi(search_queries)
+        log.debug(
+            "ChromaDB returned %d unique doc(s) for %d rewritten quer(ies): %.80r",
+            len(docs), len(search_queries), query,
+        )
+        if docs:
+            return (
+                "RELEVANT PAST CONTEXT:\n"
+                "The following excerpts from past stream logs may be relevant to the conversation. "
+                "Use them to inform your response if helpful — do not quote them directly.\n"
+                + "\n---\n".join(docs)
+            ), search_queries
+        return "", search_queries
+    except Exception:
+        log.exception("ChromaDB query failed")
+    return "", []
 
 
 async def _get_channel_history(channel: discord.TextChannel, before: discord.Message, limit: int = 20) -> str:
@@ -459,11 +494,11 @@ async def on_message(message: discord.Message) -> None:
 
     try:
         async with message.channel.typing():
-            context = _get_chroma_context(content)
+            user_display_name = message.author.display_name
             history = await _get_channel_history(message.channel, before=message)
+            context, search_queries = await _get_chroma_context_with_assistant(content, recent_context=history, username=user_display_name)
             system_suffix = "\n\n".join(filter(None, [context, history]))
             log.debug("Calling LLM for on_message")
-            user_display_name = message.author.display_name
             t_login = get_twitch_link(str(message.author.id))
             _db_user = get_user(t_login) if t_login else None
             user_nickname = (_db_user.get("nickname") or user_display_name) if _db_user else user_display_name
@@ -472,6 +507,17 @@ async def on_message(message: discord.Message) -> None:
             user_msg = f"(datetime: {date_time_str} [US Central Time]) {user_display_name}{user_nickname_str} said: {content}"
             response = await _llm(user_msg, context=system_suffix)
             log.debug("LLM response for on_message: %.120r", response)
+
+            from shared.call_logger import log_llm_call
+            log_llm_call(
+                service="discord",
+                username=user_display_name,
+                raw_message=content,
+                rewrite_queries=search_queries,
+                system_prompt=build_system_prompt(_load_personality(), ContextType.DISCORD_MENTION, system_suffix),
+                user_message=user_msg,
+                response=response,
+            )
 
         await message.channel.send(response)
         log.info("Sent response to %s in channel %s", message.author, message.channel.id)
