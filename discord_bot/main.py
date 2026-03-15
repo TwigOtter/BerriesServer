@@ -474,7 +474,7 @@ async def on_message(message: discord.Message) -> None:
         await bot.process_commands(message)
         return
 
-    content = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
+    content = message.content.replace(f"<@{bot.user.id}>", "@BerriesTheDemon").replace(f"<@!{bot.user.id}>", "@BerriesTheDemon").strip()
 
     if not content:
         log.debug("Ignoring empty message from %s in channel %s", message.author, message.channel.id)
