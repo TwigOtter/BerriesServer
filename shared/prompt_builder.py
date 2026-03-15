@@ -66,11 +66,11 @@ def build_system_prompt(
     """
     parts = [personality]
 
+    if context:
+        parts.append(context)
+
     instructions = _INSTRUCTIONS.get(context_type, "")
     if instructions:
         parts.append(instructions)
-
-    if context:
-        parts.append(context)
 
     return "\n\n".join(parts)

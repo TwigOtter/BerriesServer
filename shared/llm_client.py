@@ -39,7 +39,7 @@ async def rewrite_queries(
         f"Given this recent chat context:\n{recent_context}\n\n"
         f"And this message from {username}:\n\"{message}\"\n\n"
         "Generate 2-3 distinct search queries (one per line, no labels or punctuation) "
-        "that capture what information about Twig or the Hollow Oak setting would be "
+        "that capture what information about the user and their query would be "
         "most useful to retrieve in order to respond well to this message. "
         "If the message needs no factual retrieval (e.g. pure banter, greetings), "
         "return only the word: SKIP"
