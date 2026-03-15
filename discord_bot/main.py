@@ -30,6 +30,7 @@ from fastapi import FastAPI, Request
 from shared.chroma_client import get_collection
 from shared.config import (
     CHUNK_TOKEN_LIMIT,
+    CHROMA_N_RESULTS,
     DISCORD_ANNOUNCE_CHANNEL_ID,
     DISCORD_BERRIES_CHANNEL_WHITELIST_IDS,
     DISCORD_BERRIES_CHAT_CHANNEL_ID,
@@ -194,8 +195,25 @@ def _load_personality() -> str:
         return PERSONALITY_FILE.read_text(encoding="utf-8").strip()
     return "You are Berries, a playful forest demon."
 
+def _get_chroma_context(query: str) -> str:
+    try:
+        collection = get_collection()
+        results = collection.query(query_texts=[query], n_results=CHROMA_N_RESULTS)
+        docs = results.get("documents", [[]])[0]
+        log.debug("ChromaDB returned %d doc(s) for query: %.80r", len(docs), query)
+        if docs:
+            return (
+                "RELEVANT PAST CONTEXT:\n"
+                "The following excerpts from past stream logs may be relevant to the conversation. "
+                "Use them to inform your response if helpful — do not quote them directly.\n"
+                + "\n---\n".join(docs)
+            )
+    except Exception:
+        log.exception("ChromaDB query failed")
+    return ""
 
-async def _get_chroma_context(
+
+async def _get_chroma_context_with_assistant(
     query: str,
     recent_context: str = "",
     username: str = "",
@@ -478,7 +496,7 @@ async def on_message(message: discord.Message) -> None:
         async with message.channel.typing():
             user_display_name = message.author.display_name
             history = await _get_channel_history(message.channel, before=message)
-            context, search_queries = await _get_chroma_context(content, recent_context=history, username=user_display_name)
+            context, search_queries = await _get_chroma_context_with_assistant(content, recent_context=history, username=user_display_name)
             system_suffix = "\n\n".join(filter(None, [context, history]))
             log.debug("Calling LLM for on_message")
             t_login = get_twitch_link(str(message.author.id))
