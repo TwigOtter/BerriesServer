@@ -72,7 +72,7 @@ def query_chroma_multi(queries: list[str], n_results: int = CHROMA_N_RESULTS) ->
     and return at most `n_results` unique document texts in first-seen order.
     """
     collection = get_collection()
-    results = collection.query(query_texts=queries, n_results=n_results)
+    results = collection.query(query_texts=queries, n_results=1)
     seen_ids: set[str] = set()
     docs: list[str] = []
     for id_list, doc_list in zip(results.get("ids", []), results.get("documents", [])):
