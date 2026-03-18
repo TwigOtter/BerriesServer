@@ -55,7 +55,7 @@ _CREATE_TABLE = """
     CREATE TABLE IF NOT EXISTS users (
         id                    TEXT PRIMARY KEY,
         t_id                  INTEGER,
-        t_login               TEXT NOT NULL,
+        t_login               TEXT,
         t_display_name        TEXT,
         t_past_logins         TEXT NOT NULL DEFAULT '[]',
         t_subscription_tier   INTEGER NOT NULL DEFAULT 0,
@@ -74,14 +74,35 @@ _CREATE_TABLE = """
         country               TEXT,
         notes                 TEXT NOT NULL DEFAULT '{}',
         first_seen            TEXT NOT NULL,
-        last_seen             TEXT NOT NULL
+        last_seen             TEXT NOT NULL,
+        CHECK (t_login IS NOT NULL OR d_id IS NOT NULL)
     )
 """
+
+
+def _maybe_migrate(conn: sqlite3.Connection) -> None:
+    """
+    If the users table exists with the old NOT NULL t_login constraint, migrate
+    it to the new schema (nullable t_login, CHECK that t_login or d_id is set).
+    Uses the standard SQLite rename-recreate-copy pattern.
+    """
+    tables = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='users'"
+    ).fetchone()
+    if not tables:
+        return
+    col_info = {row["name"]: row for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if col_info.get("t_login", {})["notnull"]:
+        conn.execute("ALTER TABLE users RENAME TO users_old")
+        conn.execute(_CREATE_TABLE)
+        conn.execute("INSERT INTO users SELECT * FROM users_old")
+        conn.execute("DROP TABLE users_old")
 
 
 def init_db() -> None:
     """Create tables and indexes if they don't exist. Call once at service startup."""
     with _connect() as conn:
+        _maybe_migrate(conn)
         conn.execute(_CREATE_TABLE)
         # Partial unique indexes allow multiple NULLs while enforcing uniqueness
         # for rows that do have a value.
@@ -95,7 +116,7 @@ def init_db() -> None:
         """)
         conn.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_users_t_login
-            ON users(t_login)
+            ON users(t_login) WHERE t_login IS NOT NULL
         """)
         conn.commit()
 
@@ -270,12 +291,74 @@ def get_user(t_login: str) -> dict | None:
     return result
 
 
+def upsert_discord_user(d_id: str, d_username: str | None = None) -> None:
+    """
+    Insert a new Discord-only user or update an existing one.
+    If a row with this d_id already exists (including Twitch-linked rows),
+    only updates d_username history and last_seen — Twitch data is untouched.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT d_username, d_past_usernames FROM users WHERE d_id = ?", (d_id,)
+        ).fetchone()
+        if row:
+            past = json.loads(row["d_past_usernames"])
+            old = row["d_username"]
+            if d_username and old and old != d_username and old not in past:
+                past.append(old)
+            conn.execute(
+                """
+                UPDATE users SET
+                    d_username      = COALESCE(?, d_username),
+                    d_past_usernames = ?,
+                    last_seen       = ?
+                WHERE d_id = ?
+                """,
+                (d_username, json.dumps(past), now, d_id),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO users (id, d_id, d_username, notes, first_seen, last_seen)
+                VALUES (?, ?, ?, '{}', ?, ?)
+                """,
+                (str(uuid.uuid4()), d_id, d_username, now, now),
+            )
+        conn.commit()
+
+
+def get_user_by_discord(d_id: str) -> dict | None:
+    """Return a user's full profile looked up by Discord ID, or None if not found."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE d_id = ?", (d_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    result = dict(row)
+    result["notes"] = json.loads(result["notes"])
+    result["t_past_logins"] = json.loads(result["t_past_logins"])
+    result["d_past_usernames"] = json.loads(result["d_past_usernames"])
+    return result
+
+
 def set_nickname(t_login: str, nickname: str) -> None:
     """Set or update a user's nickname (used organically by Berries)."""
     with _connect() as conn:
         conn.execute(
             "UPDATE users SET nickname = ? WHERE t_login = ?",
             (nickname, t_login),
+        )
+        conn.commit()
+
+
+def set_nickname_for_discord(d_id: str, nickname: str) -> None:
+    """Set or update a user's nickname looked up by Discord ID."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE users SET nickname = ? WHERE d_id = ?",
+            (nickname, d_id),
         )
         conn.commit()
 
