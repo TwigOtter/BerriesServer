@@ -63,7 +63,7 @@ from shared.movie_db import (
     remove_suggestion,
     remove_watched,
 )
-from shared.user_db import init_db as init_user_db, link_discord, get_twitch_link, get_discord_for_twitch, set_nickname, get_user
+from shared.user_db import init_db as init_user_db, link_discord, get_twitch_link, get_discord_for_twitch, set_nickname, set_nickname_for_discord, get_user, get_user_by_discord, upsert_discord_user
 
 # ── Logging ────────────────────────────────────────────────────────────────
 
@@ -512,7 +512,7 @@ async def on_message(message: discord.Message) -> None:
             system_suffix = "\n\n".join(filter(None, [context, history]))
             log.debug("Calling LLM for on_message")
             t_login = get_twitch_link(str(message.author.id))
-            _db_user = get_user(t_login) if t_login else None
+            _db_user = get_user(t_login) if t_login else get_user_by_discord(str(message.author.id))
             user_nickname = (_db_user.get("nickname") or user_display_name) if _db_user else user_display_name
             user_nickname_str = f" (nickname: {user_nickname})" if user_nickname != user_display_name else ""
             date_time_str = message.created_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("America/Chicago")).strftime("%A, %Y-%m-%d %H:%M:%S")
@@ -660,14 +660,6 @@ async def set_nickname_cmd(interaction: discord.Interaction, nickname: str) -> N
     discord_id = str(interaction.user.id)
     t_login = get_twitch_link(discord_id)
 
-    if not t_login:
-        await interaction.followup.send(
-            "*tilts head* ...I don't recognise you yet. "
-            "Link your Twitch account first with `/twitch-link`, then come back.",
-            ephemeral=True,
-        )
-        return
-
     nickname = nickname.strip()
     if not nickname:
         await interaction.followup.send(
@@ -683,7 +675,11 @@ async def set_nickname_cmd(interaction: discord.Interaction, nickname: str) -> N
         )
         return
 
-    set_nickname(t_login, nickname)
+    if t_login:
+        set_nickname(t_login, nickname)
+    else:
+        upsert_discord_user(discord_id, d_username=interaction.user.name)
+        set_nickname_for_discord(discord_id, nickname)
 
     log.info(
         "Nickname set: Discord user %s (%s) / Twitch %r → %r",
