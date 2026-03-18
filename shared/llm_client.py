@@ -19,22 +19,16 @@ from shared.config import (
 
 _log = logging.getLogger("llm_client")
 
-_REWRITER_MODEL = "claude-haiku-4-5-20251001"
-
-
 async def rewrite_queries(
     message: str,
     recent_context: str,
     username: str = "a viewer",
 ) -> list[str] | None:
     """
-    Use Haiku to rewrite `message` into 2-3 focused ChromaDB search queries.
+    Rewrite `message` into 2-3 focused ChromaDB search queries using the configured LLM backend.
     Returns None if the model says SKIP (no retrieval needed).
-    Falls back to [message] on any error or if ANTHROPIC_API_KEY is not set.
+    Falls back to [message] on any error.
     """
-    if not ANTHROPIC_API_KEY:
-        return [message]
-
     prompt = (
         f"Given this recent chat context:\n{recent_context}\n\n"
         f"And this message from {username}:\n\"{message}\"\n\n"
@@ -44,17 +38,11 @@ async def rewrite_queries(
         "If the message needs no factual retrieval (e.g. pure banter, greetings), "
         "return only the word: SKIP"
     )
+    system = "You generate ChromaDB search queries. Follow the instructions exactly."
 
     try:
-        import anthropic
-        client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-        msg = await client.messages.create(
-            model=_REWRITER_MODEL,
-            max_tokens=128,
-            system="You generate ChromaDB search queries. Follow the instructions exactly.",
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = msg.content[0].text.strip()
+        raw = await get_completion(system_prompt=system, user_message=prompt, max_tokens=128)
+        raw = raw.strip()
         if raw.upper() == "SKIP":
             return None
         queries = [q.strip() for q in raw.splitlines() if q.strip()]
@@ -104,7 +92,7 @@ async def _ollama_completion(system_prompt: str, user_message: str, max_tokens: 
         resp = await client.post(
             f"{OLLAMA_BASE_URL}/api/chat",
             json=payload,
-            timeout=30.0,
+            timeout=120.0,
         )
         resp.raise_for_status()
         return resp.json()["message"]["content"]
