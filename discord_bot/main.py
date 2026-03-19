@@ -671,18 +671,42 @@ async def movie_suggest_add(interaction: discord.Interaction, title: str) -> Non
 
 
 @suggest_group.command(name="list", description="See the current movie night suggestion list")
-async def movie_suggest_list(interaction: discord.Interaction) -> None:
+@app_commands.describe(page="Page number (default: 1)")
+async def movie_suggest_list(interaction: discord.Interaction, page: int = 1) -> None:
     suggestions = get_all_suggestions()
     if not suggestions:
         await interaction.response.send_message(
-            "*peers out from the forest* ...no movies have been suggested yet."
+            "*peers out from the forest* ...no movies have been suggested yet.",
+            ephemeral=True,
         )
         return
 
-    lines = ["**Movie Night Suggestions**\n"]
-    for i, m in enumerate(suggestions, 1):
-        lines.append(f"{i}. **{m['title']}** ({m['year']}) — suggested by {m['suggested_by']}")
-    await interaction.response.send_message("\n".join(lines))
+    # Build all entry lines, then pack them into pages under 2000 chars.
+    header = "**Movie Night Suggestions**\n"
+    entries = [
+        f"{i}. **{m['title']}** ({m['year']}) — suggested by {m['suggested_by']}"
+        for i, m in enumerate(suggestions, 1)
+    ]
+
+    pages: list[list[str]] = []
+    current: list[str] = []
+    current_len = len(header)
+    for entry in entries:
+        # +1 for the newline between entries, +20 for the footer line
+        if current_len + len(entry) + 1 + 20 > 2000 and current:
+            pages.append(current)
+            current = []
+            current_len = len(header)
+        current.append(entry)
+        current_len += len(entry) + 1
+    if current:
+        pages.append(current)
+
+    total_pages = len(pages)
+    page = max(1, min(page, total_pages))
+    footer = f"\nPage {page} of {total_pages}"
+    content = header + "\n".join(pages[page - 1]) + footer
+    await interaction.response.send_message(content, ephemeral=True)
 
 
 @suggest_group.command(name="remove", description="Remove a movie from the suggestion list")
