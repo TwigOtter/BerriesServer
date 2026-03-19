@@ -70,7 +70,7 @@ async def _chroma_context(
     query: str,
     recent_context: str,
     username: str,
-) -> tuple[list[str], list[str] | None]:
+) -> tuple[list[tuple[str, dict]], list[str] | None]:
     """
     Run query rewriting + ChromaDB retrieval.
     Returns (docs, queries_used). docs is empty on SKIP or failure.

@@ -48,13 +48,33 @@ RESPONSE INSTRUCTIONS:
 }
 
 
-def format_chroma_context(docs: list[str]) -> str:
+def _chunk_header(meta: dict) -> str:
+    """Return a source label for a ChromaDB chunk based on its metadata."""
+    source = meta.get("source", "twitch")
+    if source == "discord":
+        channel = meta.get("channel_name", "")
+        start = (meta.get("start_time") or "")[:10]  # YYYY-MM-DD
+        end = (meta.get("end_time") or "")[:10]
+        date_range = f"{start} - {end}" if (start and end and start != end) else start
+        parts = [p for p in [channel, date_range] if p]
+        label = " | ".join(parts)
+        return f"[Discord: {label}]" if label else "[Discord]"
+    if source == "document":
+        parts = [p for p in [meta.get("title", ""), meta.get("date", "")] if p]
+        return f"[Document: {' - '.join(parts)}]" if parts else "[Document]"
+    # Default: twitch stream chunk
+    parts = [p for p in [meta.get("stream_date", ""), meta.get("stream_category", "")] if p]
+    return f"[Stream: {' - '.join(parts)}]" if parts else "[Stream]"
+
+
+def format_chroma_context(docs: list[tuple[str, dict]]) -> str:
     """Wrap ChromaDB results with standard framing for injection into the system prompt."""
+    formatted = [f"{_chunk_header(meta)}\n{doc}" for doc, meta in docs]
     return (
         "RELEVANT PAST CONTEXT:\n"
         "The following excerpts from past stream logs may be relevant to the conversation. "
         "Use them to inform your response if helpful — do not quote them directly.\n"
-        + "\n---\n".join(docs)
+        + "\n---\n".join(formatted)
     )
 
 

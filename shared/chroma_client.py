@@ -12,7 +12,7 @@ Usage:
 """
 
 import chromadb
-from shared.config import CHROMADB_DIR, CHROMA_COLLECTION, DATA_DIR, CHROMA_N_RESULTS
+from shared.config import CHROMADB_DIR, CHROMA_COLLECTION, DATA_DIR, CHROMA_N_RESULTS, CHROMA_L2_THRESHOLD
 
 _client: chromadb.ClientAPI | None = None
 _collection = None
@@ -66,10 +66,10 @@ def get_collection():
     return _collection
 
 
-def query_chroma_multi(queries: list[str], n_results: int = CHROMA_N_RESULTS) -> list[str]:
+def query_chroma_multi(queries: list[str], n_results: int = CHROMA_N_RESULTS) -> list[tuple[str, dict]]:
     """
     Run all queries against ChromaDB in one call, deduplicate by chunk ID,
-    and return at most `n_results` unique document texts.
+    and return at most `n_results` unique (document, metadata) pairs.
 
     Results are interleaved round-robin by rank across queries (best from each
     query first, then 2nd-best from each, etc.) so that each query is guaranteed
@@ -78,7 +78,11 @@ def query_chroma_multi(queries: list[str], n_results: int = CHROMA_N_RESULTS) ->
     if not queries:
         return []
     collection = get_collection()
-    results = collection.query(query_texts=queries, n_results=n_results)
+    results = collection.query(
+        query_texts=queries,
+        n_results=n_results,
+        include=["documents", "metadatas", "distances"],
+    )
 
     # Example `results` structure for 2 queries and n_results=3:
     # {
@@ -89,32 +93,50 @@ def query_chroma_multi(queries: list[str], n_results: int = CHROMA_N_RESULTS) ->
     #     "documents": [
     #         ["text of chunk 1...", "text of chunk 5...", "text of chunk 12..."],
     #         ["text of chunk 3...", "text of chunk 1...", "text of chunk 8..."],
+    #     ],
+    #     "metadatas": [
+    #         [{"stream_date": "2025-11-14", ...}, ...],  # metadata for query 1 results
+    #         [{"stream_date": "2025-11-14", ...}, ...],  # metadata for query 2 results
+    #     ],
+    #     "distances": [
+    #         [0.42, 0.71, 1.05],  # L2 distances for query 1 (lower = more similar)
+    #         [0.38, 0.79, 0.91],  # L2 distances for query 2
     #     ]
     # }
 
-    # Build per-query ranked lists of (chunk_id, doc) pairs.
-    per_query: list[list[tuple[str, str]]] = [
-        list(zip(id_list, doc_list))
-        for id_list, doc_list in zip(results.get("ids", []), results.get("documents", []))
+    # Build per-query ranked lists of (chunk_id, doc, metadata) triples,
+    # filtering out any chunk whose L2 distance exceeds the threshold.
+    per_query: list[list[tuple[str, str, dict]]] = [
+        [
+            (chunk_id, doc, meta)
+            for chunk_id, doc, meta, dist in zip(id_list, doc_list, meta_list, dist_list)
+            if dist <= CHROMA_L2_THRESHOLD
+        ]
+        for id_list, doc_list, meta_list, dist_list in zip(
+            results.get("ids", []),
+            results.get("documents", []),
+            results.get("metadatas", []),
+            results.get("distances", []),
+        )
     ]
 
     # `per_query` is now:
     # [
-    #   [("chunk_001", "text..."), ("chunk_005", "text..."), ...],  <- query 1's results
-    #   [("chunk_003", "text..."), ("chunk_001", "text..."), ...],  <- query 2's results
+    #   [("chunk_001", "text...", {...}), ("chunk_005", "text...", {...}), ...],  <- query 1
+    #   [("chunk_003", "text...", {...}), ("chunk_001", "text...", {...}), ...],  <- query 2
     # ]
 
     # Interleave round-robin: rank-0 from each query, then rank-1, etc.
     # Stops as soon as n_results unique chunks are collected.
     seen_ids: set[str] = set()
-    docs: list[str] = []
+    docs: list[tuple[str, dict]] = []
     for rank in range(n_results):
         for query_results in per_query:
             if len(docs) >= n_results:
                 return docs
             if rank < len(query_results):
-                chunk_id, doc = query_results[rank]
+                chunk_id, doc, meta = query_results[rank]
                 if chunk_id not in seen_ids:
                     seen_ids.add(chunk_id)
-                    docs.append(doc)
+                    docs.append((doc, meta))
     return docs
