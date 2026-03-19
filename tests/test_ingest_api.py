@@ -5,8 +5,9 @@ Integration tests for ingest_api endpoints.
 The FastAPI app is tested in-process via httpx.AsyncClient — no server needed.
 
 Mocked dependencies:
-  - shared.llm_client.get_completion  — avoids real API calls
-  - ingest_api.main.get_collection    — avoids real ChromaDB
+  - shared.ask_berries.get_completion   — avoids real API calls (patched where used)
+  - shared.ask_berries.rewrite_queries  — avoids rewriter LLM calls
+  - ingest_api.main.get_collection      — avoids real ChromaDB
   - ingest_api.main._post_to_streamerbot — avoids real Streamer.bot HTTP
   - shared.user_db.init_db / upsert_user — avoids touching data/users.db
 """
@@ -34,7 +35,8 @@ async def client(mock_collection, tmp_path):
     Resets module-level buffer state between tests.
     """
     patches = [
-        patch("shared.llm_client.get_completion", new=AsyncMock(return_value="spooky test response")),
+        patch("shared.ask_berries.get_completion", new=AsyncMock(return_value="spooky test response")),
+        patch("shared.ask_berries.rewrite_queries", new=AsyncMock(return_value=["test query"])),
         patch("ingest_api.main.get_collection", return_value=mock_collection),
         patch("ingest_api.main._post_to_streamerbot", new=AsyncMock()),
         patch("shared.user_db.init_db"),
@@ -202,7 +204,7 @@ class TestMentionEvent:
 
     async def test_twitch_tts_context_includes_prosody_instructions(self, client):
         """TTS=True should produce a system prompt with prosody tag instructions."""
-        with patch("shared.llm_client.get_completion", new=AsyncMock(return_value="boo")) as mock_llm:
+        with patch("shared.ask_berries.get_completion", new=AsyncMock(return_value="boo")) as mock_llm:
             await client.post("/event/mention", json={
                 "text": "say something dramatic",
                 "TTS": True,
@@ -212,7 +214,7 @@ class TestMentionEvent:
 
     async def test_twitch_chat_context_excludes_prosody_instructions(self, client):
         """TTS=False should produce a system prompt without prosody tag instructions."""
-        with patch("shared.llm_client.get_completion", new=AsyncMock(return_value="boo")) as mock_llm:
+        with patch("shared.ask_berries.get_completion", new=AsyncMock(return_value="boo")) as mock_llm:
             await client.post("/event/mention", json={
                 "text": "say something",
                 "TTS": False,
@@ -221,16 +223,19 @@ class TestMentionEvent:
         assert "prosody" not in system_prompt.lower()
 
     async def test_system_prompt_forbids_markdown_on_twitch(self, client):
-        with patch("shared.llm_client.get_completion", new=AsyncMock(return_value="boo")) as mock_llm:
+        with patch("shared.ask_berries.get_completion", new=AsyncMock(return_value="boo")) as mock_llm:
             await client.post("/event/mention", json={"text": "hello"})
         system_prompt = mock_llm.call_args.kwargs["system_prompt"]
         assert "markdown" in system_prompt.lower()
 
     async def test_chroma_context_injected_when_available(self, client, mock_collection):
         mock_collection.query.return_value = {
-            "documents": [["Berries once hid in Twig's streaming chair."]]
+            "ids": [["chunk_001"]],
+            "documents": [["Berries once hid in Twig's streaming chair."]],
+            "metadatas": [[{"source": "twitch", "stream_date": "2025-11-14", "stream_category": "Games"}]],
+            "distances": [[0.5]],
         }
-        with patch("shared.llm_client.get_completion", new=AsyncMock(return_value="boo")) as mock_llm:
+        with patch("shared.ask_berries.get_completion", new=AsyncMock(return_value="boo")) as mock_llm:
             await client.post("/event/mention", json={"text": "what are you up to?"})
         system_prompt = mock_llm.call_args.kwargs["system_prompt"]
         assert "Berries once hid in Twig's streaming chair." in system_prompt
