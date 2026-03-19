@@ -69,15 +69,52 @@ def get_collection():
 def query_chroma_multi(queries: list[str], n_results: int = CHROMA_N_RESULTS) -> list[str]:
     """
     Run all queries against ChromaDB in one call, deduplicate by chunk ID,
-    and return at most `n_results` unique document texts in first-seen order.
+    and return at most `n_results` unique document texts.
+
+    Results are interleaved round-robin by rank across queries (best from each
+    query first, then 2nd-best from each, etc.) so that each query is guaranteed
+    at least one result before any query claims a second slot.
     """
+    if not queries:
+        return []
     collection = get_collection()
-    results = collection.query(query_texts=queries, n_results=CHROMA_N_RESULTS)
+    results = collection.query(query_texts=queries, n_results=n_results)
+
+    # Example `results` structure for 2 queries and n_results=3:
+    # {
+    #     "ids": [
+    #         ["chunk_001", "chunk_005", "chunk_012"],  # top 3 results for query 1
+    #         ["chunk_003", "chunk_001", "chunk_008"],  # top 3 results for query 2
+    #     ],
+    #     "documents": [
+    #         ["text of chunk 1...", "text of chunk 5...", "text of chunk 12..."],
+    #         ["text of chunk 3...", "text of chunk 1...", "text of chunk 8..."],
+    #     ]
+    # }
+
+    # Build per-query ranked lists of (chunk_id, doc) pairs.
+    per_query: list[list[tuple[str, str]]] = [
+        list(zip(id_list, doc_list))
+        for id_list, doc_list in zip(results.get("ids", []), results.get("documents", []))
+    ]
+
+    # `per_query` is now:
+    # [
+    #   [("chunk_001", "text..."), ("chunk_005", "text..."), ...],  <- query 1's results
+    #   [("chunk_003", "text..."), ("chunk_001", "text..."), ...],  <- query 2's results
+    # ]
+
+    # Interleave round-robin: rank-0 from each query, then rank-1, etc.
+    # Stops as soon as n_results unique chunks are collected.
     seen_ids: set[str] = set()
     docs: list[str] = []
-    for id_list, doc_list in zip(results.get("ids", []), results.get("documents", [])):
-        for chunk_id, doc in zip(id_list, doc_list):
-            if chunk_id not in seen_ids:
-                seen_ids.add(chunk_id)
-                docs.append(doc)
-    return docs[:n_results]
+    for rank in range(n_results):
+        for query_results in per_query:
+            if len(docs) >= n_results:
+                return docs
+            if rank < len(query_results):
+                chunk_id, doc = query_results[rank]
+                if chunk_id not in seen_ids:
+                    seen_ids.add(chunk_id)
+                    docs.append(doc)
+    return docs
