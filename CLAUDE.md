@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Running Services
 
-Three independent FastAPI/async services:
+Two independent services:
 
 ```bash
 # Activate venv first
@@ -17,18 +17,15 @@ source /opt/berries/venv/bin/activate
 # Ingest API (receives events from Streamer.bot)
 uvicorn ingest_api.main:app --host 0.0.0.0 --port 8000
 
-# Berries bot (generates LLM responses)
-uvicorn berries_bot.main:app --host 127.0.0.1 --port 8001
-
 # Discord bot
 python -m discord_bot.main
 ```
 
-Production uses systemd services in `deploy/` (`berries-ingest.service`, `berries-bot.service`, `berries-discord.service`).
+Production uses systemd services in `deploy/` (`berries-ingest.service`, `berries-discord.service`).
 
 ```bash
-sudo systemctl restart berries-ingest berries-bot berries-discord
-sudo journalctl -u berries-bot -f  # tail logs
+sudo systemctl restart berries-ingest berries-discord
+sudo journalctl -u berries-discord -f  # tail logs
 ```
 
 ## Architecture
@@ -37,19 +34,21 @@ sudo journalctl -u berries-bot -f  # tail logs
 ```
 Streamer.bot → ingest_api (8000) → ChromaDB + SQLite + JSONL transcripts
                     ↓ (on /event/mention)
-              berries_bot (8001) → ChromaDB query → LLM → Streamer.bot webhook
+              shared/ask_berries.py → ChromaDB query → LLM → Streamer.bot webhook
                     ↓ (on /event/going-live)
-              discord_bot (8002 webhook) → Discord announcement
+              discord_bot (8002 webhook) → shared/ask_berries.py → LLM → Discord announcement
 ```
 
 ### Services
-- **`ingest_api/`** — Receives all Streamer.bot events; buffers and chunks chat (~480 tokens or 5 min timeout); embeds chunks into ChromaDB; upserts user profiles; triggers berries_bot on mentions.
-- **`berries_bot/`** — Assembles LLM context (4 ChromaDB results + 2 recent in-memory chunks); calls LLM with `personality.txt` system prompt; posts response back to Streamer.bot.
-- **`discord_bot/`** — Handles @mentions with RAG context; slash commands for movie suggestions/history/announcements; receives going-live webhooks.
+- **`ingest_api/`** — Receives all Streamer.bot events; buffers and chunks chat (~480 tokens or 5 min timeout); embeds chunks into ChromaDB; upserts user profiles; calls `ask_berries_twitch()` on mentions.
+- **`discord_bot/`** — Handles @mentions with RAG context; slash commands for movie suggestions/history/announcements; receives going-live webhooks; calls `ask_berries_discord_mention()`, `ask_berries_movie_announcement()`, `ask_berries_twitch_going_live()`.
+- **`berries_bot/`** — Config/assets only. `personality.txt` is the character prompt loaded by `shared/ask_berries.py`.
 
 ### Shared Libraries (`shared/`)
+- `ask_berries.py` — LLM hub; all response pipelines live here (nickname lookup, ChromaDB, prompt assembly, logging).
+- `prompt_builder.py` — Assembles system prompts from personality + context formatters + per-ContextType instructions.
 - `config.py` — All config from `.env`; every service imports from here.
-- `llm_client.py` — Async abstraction over Anthropic API or Ollama (swapped via `LLM_BACKEND` env var).
+- `llm_client.py` — Async abstraction over Anthropic API or Ollama (swapped via `LLM_BACKEND` env var); includes query rewriter.
 - `chroma_client.py` — Singleton ChromaDB client using local `nomic-ai/nomic-embed-text-v1` embeddings (8192-token limit, requires `einops`).
 - `user_db.py` / `movie_db.py` — SQLite wrappers for user profiles and movie suggestions/history.
 
@@ -70,6 +69,6 @@ Copy `.env.example` to `.env`. Key variables:
 - **Discord watch channels are logged** — Messages in `DISCORD_WATCH_CHANNEL_IDS` channels are buffered and flushed to ChromaDB (same chunking logic as Twitch). Other Discord channels are not stored.
 - **Streamer.bot handles response gating** — Redeems, keywords, and sub checks are managed externally
 
-## No Test Suite
+## Test Suite
 
-There is no automated test suite or linter configuration. Manual testing via HTTP requests to the running services.
+- `python pytest` (only works on Linux machine, not in dev environment)

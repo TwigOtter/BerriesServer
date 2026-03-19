@@ -10,8 +10,8 @@ from enum import Enum
 
 
 class ContextType(Enum):
-    TWITCH_CHAT = "twitch_chat"           # berries_bot /respond (no TTS)
-    TWITCH_TTS = "twitch_tts"             # ingest_api /event/mention with TTS=True
+    TWITCH_CHAT = "twitch_chat"           # Twitch chat response (no TTS)
+    TWITCH_TTS = "twitch_tts"             # Twitch response read aloud via TTS
     DISCORD_MENTION = "discord_mention"   # Discord @mention responses
     DISCORD_ANNOUNCE = "discord_announce" # Discord announcements (movie night, going-live)
 
@@ -46,6 +46,34 @@ RESPONSE INSTRUCTIONS:
 - Please avoid using roleplay or emote actions (e.g. *does a little dance*), as they often come across awkwardly in announcements.
 - 2-3 sentences max.""",
 }
+
+
+def format_chroma_context(docs: list[str]) -> str:
+    """Wrap ChromaDB results with standard framing for injection into the system prompt."""
+    return (
+        "RELEVANT PAST CONTEXT:\n"
+        "The following excerpts from past stream logs may be relevant to the conversation. "
+        "Use them to inform your response if helpful — do not quote them directly.\n"
+        + "\n---\n".join(docs)
+    )
+
+
+def format_recent_chunks(chunk_texts: list[str]) -> str:
+    """Wrap recent Twitch chat chunks (short-term memory) with framing."""
+    return (
+        "RECENT CONVERSATION:\n"
+        "The most recent chat activity from this stream, for continuity:\n"
+        + "\n---\n".join(chunk_texts)
+    )
+
+
+def format_channel_history(lines: list[str]) -> str:
+    """Wrap Discord channel history lines with framing."""
+    return (
+        "=== RECENT CHANNEL MESSAGES ===\n"
+        "Here are the most recent messages in the channel, which may help you provide context and continuity to your response:\n"
+        + "\n".join(lines)
+    )
 
 
 def build_system_prompt(

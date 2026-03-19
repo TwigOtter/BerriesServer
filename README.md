@@ -21,12 +21,23 @@ AI chatbot powering **Berries**, a spooky forest demon who responds in Twitch ch
      |── upserts ─────> data/movies.db                       (movie suggestions/history)
      |── responds ────> Streamer.bot webhook                 (Berries' replies)
      |── forwards ────> discord_bot :8002                    (going-live events)
-
-[discord_bot]  ── discord.py, persistent WebSocket + FastAPI webhook :8002
+     |
+     | ask_berries_twitch()
+     v
+[shared/ask_berries.py]  ── LLM hub (nickname lookup, ChromaDB, prompt assembly, logging)
      |── reads ───────> data/chromadb/
      |── reads ───────> berries_bot/personality.txt
+     |── calls ───────> LLM (Anthropic / Ollama)
+
+[discord_bot]  ── discord.py, persistent WebSocket + FastAPI webhook :8002
      |── embeds ──────> data/chromadb/                       (watch channel messages)
      |── responds ────> Discord channel
+     |
+     | ask_berries_discord_mention()
+     | ask_berries_movie_announcement()
+     | ask_berries_twitch_going_live()
+     v
+[shared/ask_berries.py]
 ```
 
 ---
@@ -55,15 +66,24 @@ All endpoints require `X-Secret: <INGEST_SECRET>` header.
 
 After each flush, the last `CHUNK_OVERLAP_SEC` seconds of entries (default 30s) are kept as the seed for the next chunk.
 
-### `berries_bot` — AI Response Pipeline (port 8001)
+### `shared/ask_berries.py` — LLM Hub
 
-Triggered by `/event/mention`. Builds context and calls LLM.
+All LLM calls go through here. Never called directly from non-service code.
 
-**Per-response context assembly:**
-1. Load `berries_bot/personality.txt` as system prompt
-2. Query ChromaDB for `CHROMA_N_RESULTS` (default 4) semantically similar past chunks
-3. Prepend last 2 chunks from `recent_chunks` deque (short-term memory)
-4. Call LLM → POST response back to Streamer.bot
+| Function | Used by | Description |
+|---|---|---|
+| `ask_berries_twitch()` | `ingest_api` | Twitch @mention: nickname lookup, ChromaDB, prompt, LLM, log |
+| `ask_berries_discord_mention()` | `discord_bot` | Discord @mention: same pipeline for Discord |
+| `ask_berries_movie_announcement()` | `discord_bot` | Movie night: ChromaDB lookup + two-call announcement+gif pipeline |
+| `ask_berries_twitch_going_live()` | `discord_bot` | Going-live: two-call announcement+gif pipeline |
+| `ask_berries_discord()` | `discord_bot` | One-off in-character replies (e.g. movie suggestion rejection) |
+| `ask_berries()` | internal | Raw LLM call, no logging |
+
+**Per-response context assembly (mention pipelines):**
+1. Load `berries_bot/personality.txt` as system prompt base
+2. Rewrite query → query ChromaDB for `CHROMA_N_RESULTS` semantically similar past chunks
+3. Inject last 2 flushed chunks from `recent_chunks` deque (Twitch short-term memory)
+4. Call LLM → return response to service for delivery
 
 ### `discord_bot` — Community Server Bot
 
@@ -195,17 +215,19 @@ Copy `.env.example` to `.env`. Key variables:
 ```
 BerriesServer/
 ├── berries_bot/
-│   ├── main.py              # response pipeline (port 8001)
-│   └── personality.txt      # Berries' system prompt
+│   └── personality.txt      # Berries' system prompt (read by shared/ask_berries.py)
 ├── discord_bot/
 │   └── main.py              # discord.py bot + FastAPI webhook (port 8002)
 ├── ingest_api/
 │   └── main.py              # FastAPI event ingestion (port 8000)
 ├── shared/
+│   ├── ask_berries.py       # LLM hub — all response pipelines
+│   ├── call_logger.py       # structured LLM call logging
 │   ├── chroma_client.py     # ChromaDB singleton
 │   ├── config.py            # centralized config from .env
-│   ├── llm_client.py        # Anthropic + Ollama abstraction
+│   ├── llm_client.py        # Anthropic + Ollama abstraction + query rewriter
 │   ├── movie_db.py          # movie suggestions/history SQLite CRUD
+│   ├── prompt_builder.py    # system prompt assembly + context formatters
 │   ├── tokenizer.py         # token counting (tiktoken)
 │   └── user_db.py           # user profile SQLite CRUD
 ├── data/
@@ -215,7 +237,6 @@ BerriesServer/
 │   └── movies.db            # auto-created on first run
 ├── deploy/
 │   ├── berries-ingest.service
-│   ├── berries-bot.service
 │   └── berries-discord.service
 ├── documentation/
 │   └── streamerbot-setup-checklist.md

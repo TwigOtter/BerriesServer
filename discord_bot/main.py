@@ -18,7 +18,6 @@ import logging.handlers
 import random
 import uuid
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 
 import discord
 import httpx
@@ -30,7 +29,6 @@ from fastapi import FastAPI, Request
 from shared.chroma_client import get_collection
 from shared.config import (
     CHUNK_TOKEN_LIMIT,
-    CHROMA_N_RESULTS,
     DISCORD_ANNOUNCE_CHANNEL_ID,
     DISCORD_BERRIES_CHANNEL_WHITELIST_IDS,
     DISCORD_BERRIES_CHAT_CHANNEL_ID,
@@ -46,12 +44,15 @@ from shared.config import (
     GIPHY_API_KEY,
     LOGS_DIR,
     OMDB_API_KEY,
-    PERSONALITY_FILE,
     TWITCH_CHANNEL,
 )
 from shared.tokenizer import count_tokens
-from shared.llm_client import get_completion
-from shared.prompt_builder import build_system_prompt, ContextType
+from shared.prompt_builder import format_channel_history
+from shared.ask_berries import (
+    ask_berries_discord_mention,
+    ask_berries_movie_announcement,
+    ask_berries_twitch_going_live,
+)
 from shared.movie_db import (
     add_suggestion,
     get_all_suggestions,
@@ -63,7 +64,7 @@ from shared.movie_db import (
     remove_suggestion,
     remove_watched,
 )
-from shared.user_db import init_db as init_user_db, link_discord, get_twitch_link, get_discord_for_twitch, set_nickname, set_nickname_for_discord, get_user, get_user_by_discord, upsert_discord_user
+from shared.user_db import init_db as init_user_db, link_discord, get_twitch_link, get_discord_for_twitch, set_nickname, set_nickname_for_discord, upsert_discord_user
 
 # ── Logging ────────────────────────────────────────────────────────────────
 
@@ -190,65 +191,6 @@ async def _flush_watch_channel(channel_id: int, reason: str) -> None:
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
-def _load_personality() -> str:
-    if PERSONALITY_FILE.exists():
-        return PERSONALITY_FILE.read_text(encoding="utf-8").strip()
-    return "You are Berries, a playful forest demon."
-
-def _get_chroma_context(query: str) -> str:
-    try:
-        collection = get_collection()
-        results = collection.query(query_texts=[query], n_results=CHROMA_N_RESULTS)
-        docs = results.get("documents", [[]])[0]
-        log.debug("ChromaDB returned %d doc(s) for query: %.80r", len(docs), query)
-        if docs:
-            return (
-                "RELEVANT PAST CONTEXT:\n"
-                "The following excerpts from past stream logs may be relevant to the conversation. "
-                "Use them to inform your response if helpful — do not quote them directly.\n"
-                + "\n---\n".join(docs)
-            )
-    except Exception:
-        log.exception("ChromaDB query failed")
-    return ""
-
-
-async def _get_chroma_context_with_assistant(
-    query: str,
-    recent_context: str = "",
-    username: str = "",
-) -> tuple[str, list[str] | None]:
-    """
-    Returns (context_block, search_queries).
-    search_queries is None if the rewriter returned SKIP, or a list of strings otherwise.
-    """
-    try:
-        from shared.llm_client import rewrite_queries
-        from shared.chroma_client import query_chroma_multi
-
-        search_queries = await rewrite_queries(query, recent_context, username or "a Discord user")
-        if search_queries is None:  # SKIP — no retrieval needed
-            log.debug("rewrite_queries returned SKIP for query: %.80r", query)
-            return "", None
-
-        docs = query_chroma_multi(search_queries)
-        log.debug(
-            "ChromaDB returned %d unique doc(s) for %d rewritten quer(ies): %.80r",
-            len(docs), len(search_queries), query,
-        )
-        if docs:
-            return (
-                "RELEVANT PAST CONTEXT:\n"
-                "The following excerpts from past stream logs may be relevant to the conversation. "
-                "Use them to inform your response if helpful — do not quote them directly.\n"
-                + "\n---\n".join(docs)
-            ), search_queries
-        return "", search_queries
-    except Exception:
-        log.exception("ChromaDB query failed")
-    return "", []
-
-
 async def _get_channel_history(
     channel: discord.TextChannel,
     before: discord.Message,
@@ -273,35 +215,10 @@ async def _get_channel_history(
             lines.pop(0)
         if not lines:
             return ""
-        return (
-            "=== RECENT CHANNEL MESSAGES ===\n"
-            "Here are the most recent messages in the channel, which may help you provide context and continuity to your response:\n"
-            + "\n".join(lines)
-        )
+        return format_channel_history(lines)
     except Exception:
         log.exception("Failed to fetch channel history for channel %s", channel.id)
         return ""
-
-def cleanup_response(text: str) -> str:
-    """Clean up LLM response by stripping out any instances of italicized roleplay and double line breaks."""
-    import re
-    # Remove lines that are entirely italicized roleplay actions (e.g. "*does a thing*")
-    text = re.sub(r"^\*[^*\n]+\*\s*$", "", text, flags=re.MULTILINE)
-    text = re.sub(r"\n{2,}", "\n", text)  # Replace 2 or more line breaks with just 1
-    return text.strip()
-
-async def _llm(
-    user_message: str,
-    context_type: ContextType = ContextType.DISCORD_MENTION,
-    context: str = "",
-) -> str:
-    """Call the LLM with Berries' personality and context-appropriate instructions."""
-    personality = _load_personality()
-    system = build_system_prompt(personality, context_type, context)
-    log.debug("LLM call — user_message: %.120r", user_message)
-    response = await get_completion(system_prompt=system, user_message=user_message, max_tokens=600)
-    log.debug("LLM response: %.120r", response)
-    return cleanup_response(response)
 
 
 async def _omdb_search(title: str) -> dict | None:
@@ -332,13 +249,6 @@ async def _omdb_search_many(title: str, limit: int = 5) -> list[dict]:
         log.exception("OMDb search failed for %r", title)
     return []
 
-
-async def _gif_search_query(context: str) -> str:
-    """Ask Berries to pick a Tenor search query that fits the announcement context."""
-    return await get_completion(
-        system_prompt="You generate short Tenor GIF search queries. Reply with ONLY the search query, 2-5 words, no punctuation, no explanation.",
-        user_message=context,
-    )
 
 
 async def _fetch_gif(query: str) -> str | None:
@@ -506,30 +416,15 @@ async def on_message(message: discord.Message) -> None:
 
     try:
         async with message.channel.typing():
-            user_display_name = message.author.display_name
             history = await _get_channel_history(message.channel, before=message)
-            context, search_queries = await _get_chroma_context_with_assistant(content, recent_context=history, username=user_display_name)
-            system_suffix = "\n\n".join(filter(None, [context, history]))
-            log.debug("Calling LLM for on_message")
-            t_login = get_twitch_link(str(message.author.id))
-            _db_user = get_user(t_login) if t_login else get_user_by_discord(str(message.author.id))
-            user_nickname = (_db_user.get("nickname") or user_display_name) if _db_user else user_display_name
-            user_nickname_str = f" (nickname: {user_nickname})" if user_nickname != user_display_name else ""
-            date_time_str = message.created_at.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("America/Chicago")).strftime("%A, %Y-%m-%d %H:%M:%S")
-            user_msg = f"(datetime: {date_time_str} [US Central Time]) {user_display_name}{user_nickname_str} said: {content}"
-            response = await _llm(user_msg, context=system_suffix)
-            log.debug("LLM response for on_message: %.120r", response)
-
-            from shared.call_logger import log_llm_call
-            log_llm_call(
-                service="discord",
-                username=user_display_name,
-                raw_message=content,
-                rewrite_queries=search_queries,
-                system_prompt=build_system_prompt(_load_personality(), ContextType.DISCORD_MENTION, system_suffix),
-                user_message=user_msg,
-                response=response,
+            response = await ask_berries_discord_mention(
+                query=content,
+                display_name=message.author.display_name,
+                discord_id=str(message.author.id),
+                channel_history=history,
+                created_at=message.created_at,
             )
+            log.debug("LLM response for on_message: %.120r", response)
 
         await message.channel.send(response)
         log.info("Sent response to %s in channel %s", message.author, message.channel.id)
@@ -763,10 +658,7 @@ async def movie_suggest_add(interaction: discord.Interaction, title: str) -> Non
     recently_watched = next((m for m in recent if m["imdb_id"] == imdb_id), None)
     if recently_watched:
         watched_date = recently_watched["watched_at"][:10]
-        rejection = await _llm(
-            f"Someone just suggested '{movie_title} ({year})' for movie night, but we already watched it "
-            f"on {watched_date} (less than a year ago). Reject the suggestion in-character — be playful. Keep it short."
-        )
+        rejection = f"Hey, we just watched that one back on {watched_date}! Let's give something else a chance. :3"
         await interaction.followup.send(rejection, ephemeral=True)
         return
 
@@ -835,24 +727,18 @@ async def movie_announce(interaction: discord.Interaction, title: str, notes: st
     movie_title = result["Title"]
     year = result["Year"]
 
-    prompt = (
-        f"Tonight's movie night movie is: {movie_title} ({year}). "
-        f"Write a short in-character announcement for the Discord server. "
-        f"Give your genuine reaction to this movie choice and hype people up to join either in VRChat or in the Discord stream. "
-        f"2-3 sentences, stay in character."
-    )
-    if notes:
-        prompt += f" Additional notes about this movie from Twig: {notes}"
-
-    announcement = await _llm(prompt, context_type=ContextType.DISCORD_ANNOUNCE)
+    result_pair = await ask_berries_movie_announcement(movie_title, year, notes=notes)
+    if not result_pair:
+        await interaction.followup.send("*rustles nervously* ...something went wrong generating the announcement.")
+        return
+    announcement, gif_query = result_pair
 
     # Ensure the movie exists in the DB before marking watched
     if not get_suggestion(imdb_id):
         add_suggestion(imdb_id, movie_title, year, interaction.user.display_name)
     mark_watched(imdb_id)
 
-    gif_query = await _gif_search_query(f"Pick a GIF search term for a movie night announcement about: {movie_title} ({year})")
-    gif_url = await _fetch_gif(gif_query.strip())
+    gif_url = await _fetch_gif(gif_query) if gif_query else None
     role_ping = f"<@&{DISCORD_EVENT_ROLE_ID}>\n" if DISCORD_EVENT_ROLE_ID else ""
     message = f"# {movie_title} ({year})\n" + role_ping + announcement
 
@@ -927,15 +813,13 @@ async def going_live(request: Request) -> dict:
     category = body.get("category", "")
     log.info("Going-live event received: title=%r, category=%r", stream_title, category)
 
-    announcement = await _llm(
-        f"TwigOtter just went live on Twitch! Stream title: '{stream_title}', category: '{category}'. "
-        f"Write a short in-character going-live announcement for the Discord server that tells readers what to expect based on the title and category. "
-        f"Get people hyped to come watch. 2-3 sentences, stay in character.",
-        context_type=ContextType.DISCORD_ANNOUNCE,
-    )
+    result_pair = await ask_berries_twitch_going_live(stream_title, category)
+    if not result_pair:
+        log.warning("ask_berries_twitch_going_live returned None — skipping announcement")
+        return {"status": "error", "reason": "announcement generation failed"}
+    announcement, gif_query = result_pair
 
-    gif_query = await _gif_search_query(f"Pick a GIF search term for a Twitch going-live announcement. Stream: '{stream_title}', category: '{category}'")
-    gif_url = await _fetch_gif(gif_query.strip())
+    gif_url = await _fetch_gif(gif_query) if gif_query else None
     role_ping = f"<@&{DISCORD_STREAM_ROLE_ID}>\n" if DISCORD_STREAM_ROLE_ID else ""
     message = role_ping + announcement + f"\nhttps://twitch.tv/{TWITCH_CHANNEL}"
 

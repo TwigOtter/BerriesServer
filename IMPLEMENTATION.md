@@ -6,31 +6,66 @@ Changelog, roadmap, and decisions. Updated at the end of each work session.
 
 ## Roadmap
 
-### Up Next
-- [x] Register Discord app and complete bot invite (see checklist below)
-- [x] Configure Streamer.bot actions to POST all events to `ingest_api` with correct payloads
+### Now/Tonight
 
-### Soon
-- [x] Restructure movie commands as a Discord subcommand group — `/movie suggest add`, `/movie suggest remove`, `/movie suggest list`, `/movie announce` (replaces `/movie-time`; fires LLM announcement + role ping + Giphy GIF + marks watched), `/movie history list`, `/movie history remove` (mod-only). `/movie announce` sits as a top-level subcommand alongside the `suggest` and `history` subcommand groups, which is valid in Discord's API.
-- [x] `/movie suggest add` disambiguation — OMDb search returns multiple results; instead of picking the first match, present the user with a numbered list of up to 5 candidates and prompt them to reply with 1–5 (or "cancel"). Also consider a standalone `/movie search <query>` command that returns candidate titles with their IMDB links so users can confirm the right film before suggesting it. — OMDb search returns multiple results; instead of picking the first match, present the user with a numbered list of up to 5 candidates and prompt them to reply with 1–5 (or "cancel"). Also consider a standalone `/search-movies <query>` command that returns candidate titles with their IMDB links so users can confirm the right film before suggesting it.
-- [x] Add logging to `discord_bot` — file-based rotating log to `logs/discord_bot.log` is implemented; detailed per-command logging and GIF failure tracking still missing
-- [ ] Per-user context injection — on `/event/mention`, pull the user's `users.db` record and append relevant fields (nickname, sub tier, etc.) to the system prompt
+#### Refactor Codebase, Consolidate Pathways
+
+- Currently, the ways we invoke Berries, inject context, get user details, and more--is fractured.
+   - `/ingest_api` calls `_generate_response()` to build build out the system instructions
+   - `/discord_bot` calls `_llm()` which calls `_llm()` which then calls `/shared/_generate_response()`
+   - **`berries_bot/main.py` is dead code** — the entire response pipeline (LLM call, ChromaDB context, Streamer.bot callback with `CHAT`/`TTS`/`action_id`) now lives in `ingest_api`. `berries_bot`'s `/respond` endpoint and `post_to_twitch()` are never called; the service runs but does nothing. Options: delete `berries_bot/main.py` and the `berries-bot.service` systemd unit, or gut it and repurpose it as a true standalone if separation is ever desired.
+
+I want to consider refactoring the code base so that there are two services -- Twitch (aka `ingest_api`) and Discord (aka `discord_bot`) -- with both interact with a shared `berries_bot` hub. I don't think `berries_bot` needs to be a systemctl service, rather, just a sort of handling center.
+Here are the sorts of things I want centralized:
+
+- Getting a response from Berries: we should have one place where messages to Berries via Anthropic API are built, sent, and recieved, and we can wrap that in multiple methods if need be
+
+```py
+async def ask_berries(system_prompt: str, user_message: str, max_tokens: int) -> str | None:
+   """Sends a request to the `BERRIES_API_MODEL`"""
+
+def ask_berries_twitch(
+   query: str, # the user's query that should be passed as the user message
+   username: str, # optional, the username to lookup for additional info (nicknames, pronouns, species, etc)
+   recent_history: str, # recent chat messages, discord channel messages
+   stream_title: str, # title of the stream
+   stream_category: str, # the name of the category/game that is being streamed
+) -> str | None:
+   """Builds a query for `ask_berries()` from a Twitch chat message"""
+
+async def ask_berries_discord(...) -> str | None:
+   """Builds a query for `ask_berries()` from a Discord chat message"""
+
+async def ask_berries_movie_announcemnt(...) -> str | None:
+async def ask_berries_twitch_announcement(...) -> str | None:
+```
+
+The main benefit here is being able to reuse code that fetches user information, prefaces context injections, and so on.
+I just realized this is basically what `prompt_builder.py` does...
+
+Alright, first step is mapping out the pathways in which we prompt Berries for a reply.
+
+### Backlog
 - [ ] `log: false` flag — when Streamer.bot sends `"log": false`, suppress JSONL + ChromaDB writes for semi-private exchanges
-- [x] Emote spam condensing — `PogChamp PogChamp PogChamp` → `PogChamp x3` in `_preprocess_message()` (uses `messageStripped` to identify emote tokens)
-
-- [ ] **Twitch↔Discord account linking** — Discord side is done: `/twitch-link <twitch_username>` slash command and `link_discord()` in `user_db.py` are implemented. Remaining: Streamer.bot Warn API verification step — generate a short code, trigger a Twitch Warn (via Streamer.bot) with "use this code in Discord: XXXX", user confirms with `/verify <code>`. Note: Warn API requires the bot account to have moderator privileges and may create a moderation record — verify whether Twitch logs warns in a way that's visible to the user or to Twitch itself before shipping. Once fully linked, users can manage their profile via Discord commands (`/set-nickname`, `/set-timezone`, etc.).
 - [ ] **User timezone** — store `timezone` (IANA string, e.g. `America/Chicago`) per user in `users.db`. `/set-timezone <city or zone>` to register. `/time [user] [time]` converts a natural-language timestamp (parsed with `dateparser`) from the invoker's timezone to the target user's timezone; returns an error if either user has no timezone set. Need to spec accepted input format — `dateparser` handles `"3pm"`, `"15:00"`, `"now"`, etc.
 - [ ] **`/temp <value> <unit> to <unit>`** — convert between F, C, and K; pure math, no external deps.
 
-### Future
-- [ ] StreamDeck organic conversation button — POST to `/event/mention` with `log: false, TTS: true, respond: true`; Berries reads recent context and joins the conversation naturally
-- [ ] ChromaDB rebuild utility — script to reconstruct the index from `.jsonl` ground truth files
-- [ ] TTS routing — when `TTS: true`, route Berries' response to SpeakerBot via a dedicated Streamer.bot action
-- [ ] **`berries_bot/main.py` is dead code** — the entire response pipeline (LLM call, ChromaDB context, Streamer.bot callback with `CHAT`/`TTS`/`action_id`) now lives in `ingest_api`. `berries_bot`'s `/respond` endpoint and `post_to_twitch()` are never called; the service runs but does nothing. Options: delete `berries_bot/main.py` and the `berries-bot.service` systemd unit, or gut it and repurpose it as a true standalone if separation is ever desired.
+### Done
+- [x] Register Discord app and complete bot invite (see checklist below)
+- [x] Configure Streamer.bot actions to POST all events to `ingest_api` with correct payloads
+- [x] Restructure movie commands as a Discord subcommand group — `/movie suggest add`, `/movie suggest remove`, `/movie suggest list`, `/movie announce` (replaces `/movie-time`; fires LLM announcement + role ping + Giphy GIF + marks watched), `/movie history list`, `/movie history remove` (mod-only). `/movie announce` sits as a top-level subcommand alongside the `suggest` and `history` subcommand groups, which is valid in Discord's API.
+- [x] `/movie suggest add` disambiguation — OMDb search returns multiple results; instead of picking the first match, present the user with a numbered list of up to 5 candidates and prompt them to reply with 1–5 (or "cancel"). Also consider a standalone `/movie search <query>` command that returns candidate titles with their IMDB links so users can confirm the right film before suggesting it. — OMDb search returns multiple results; instead of picking the first match, present the user with a numbered list of up to 5 candidates and prompt them to reply with 1–5 (or "cancel"). Also consider a standalone `/search-movies <query>` command that returns candidate titles with their IMDB links so users can confirm the right film before suggesting it.
+- [x] Add logging to `discord_bot` — file-based rotating log to `logs/discord_bot.log` is implemented; detailed per-command logging and GIF failure tracking still missing
+- [x] Per-user context injection — on `/event/mention`, pull the user's `users.db` record and append relevant fields (nickname, sub tier, etc.) to the system prompt
+- [x] **Twitch↔Discord account linking** — Discord side is done: `/twitch-link <twitch_username>` slash command and `link_discord()` in `user_db.py` are implemented. Remaining: Streamer.bot Warn API verification step — generate a short code, trigger a Twitch Warn (via Streamer.bot) with "use this code in Discord: XXXX", user confirms with `/verify <code>`. Note: Warn API requires the bot account to have moderator privileges and may create a moderation record — verify whether Twitch logs warns in a way that's visible to the user or to Twitch itself before shipping. Once fully linked, users can manage their profile via Discord commands (`/set-nickname`, `/set-timezone`, etc.).
+- [x] Emote spam condensing — `PogChamp PogChamp PogChamp` → `PogChamp x3` in `_preprocess_message()` (uses `messageStripped` to identify emote tokens)
+- [x] StreamDeck organic conversation button — POST to `/event/mention` with `log: false, TTS: true, respond: true`; Berries reads recent context and joins the conversation naturally
+- [x] ChromaDB rebuild utility — script to reconstruct the index from `.jsonl` ground truth files
+- [x] TTS routing — when `TTS: true`, route Berries' response to SpeakerBot via a dedicated Streamer.bot action
 - [x] **`embed_docs.py` — manual document embedding script** — script is at `data/documents/embed_documents.py`; reads `.txt`/`.md` files from `data/documents/`, chunks each file, and embeds into ChromaDB with `{"source": "document"}` metadata. Designed to run on demand. Use case: lore, story writing, reference docs Berries should be able to draw from.
 - [x] **Discord message embedding** — implemented as "Discord channel monitoring" (see item directly below); Discord watch channel messages are embedded into ChromaDB with `{"source": "discord"}` metadata via `DISCORD_WATCH_CHANNEL_IDS`.
 - [x] **Discord channel monitoring (RAG source)** — allow Berries to silently watch specific Discord channels (configured via `DISCORD_WATCH_CHANNEL_IDS` env var) and embed their messages into ChromaDB for RAG context, without responding. Separate from `DISCORD_BERRIES_CHANNEL_WHITELIST_IDS` (channels that skip the 2-message redirect check). Enables community lore, inside jokes, and channel history to inform his responses.
-- [ ] **Discord mention rate limiting** — prevent @mention spam by adding a per-user cooldown (e.g. 60s) and/or a per-channel cooldown in `discord_bot`. When rate-limited, either silently ignore or send a short in-character brush-off. Cooldown values configurable via `.env`.
+- [x] **Discord mention rate limiting** — prevent @mention spam by adding a per-user cooldown (e.g. 60s) and/or a per-channel cooldown in `discord_bot`. When rate-limited, either silently ignore or send a short in-character brush-off. Cooldown values configurable via `.env`.
 
 ---
 
@@ -52,7 +87,7 @@ Bot code is complete. These manual steps remain:
 - [x] Set `DISCORD_ANNOUNCE_CHANNEL_ID` — channel for going-live and movie night announcements
 - [x] Set `DISCORD_EVENT_ROLE_ID` — right-click role → Copy Role ID (requires Developer Mode)
 - [x] Set `DISCORD_STREAM_ROLE_ID` — same as above
-- [ ] Configure Streamer.bot to `POST /event/going-live` with `{"title": "...", "category": "..."}` on stream start
+- [x] Configure Streamer.bot to `POST /event/going-live` with `{"title": "...", "category": "..."}` on stream start
 
 ---
 

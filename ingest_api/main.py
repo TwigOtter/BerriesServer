@@ -37,27 +37,17 @@ from shared.config import (
     CHUNK_TOKEN_LIMIT,
     DISCORD_BOT_WEBHOOK_URL,
     INGEST_SECRET,
-    PERSONALITY_FILE,
     STREAMERBOT_CALLBACK_URL,
     STREAMERBOT_RESPONSE_ACTION_ID,
     TRANSCRIPTS_DIR,
     USERS_DB_PATH,
 )
-from shared.prompt_builder import build_system_prompt, ContextType
+from shared.ask_berries import ask_berries_twitch
 
 
 def get_collection():
     from shared.chroma_client import get_collection as _get_collection
     return _get_collection()
-
-
-def _get_nickname(t_login: str) -> str:
-    """Return the user's nickname if set, otherwise their t_login."""
-    from shared.user_db import get_user
-    user = get_user(t_login)
-    if user and user.get("nickname"):
-        return user["nickname"]
-    return t_login
 
 
 def count_tokens(text: str) -> int:
@@ -466,81 +456,6 @@ async def health() -> dict:
     }
 
 
-# ── Berries response pipeline ──────────────────────────────────────────────
-
-def _load_personality() -> str:
-    """Load Berries' system prompt from berries_bot/personality.txt."""
-    if PERSONALITY_FILE.exists():
-        return PERSONALITY_FILE.read_text(encoding="utf-8").strip()
-    logger.warning("personality.txt not found, using fallback prompt.")
-    return "You are Berries, a spooky and playful forest demon on a Twitch stream. Keep responses short and in character."
-
-
-async def _generate_response(text: str, tts: bool = False, query: str = "", username: str = "") -> str:
-    """
-    Build context and call the LLM to generate Berries' response.
-    Injects short-term memory (recent deque chunks) and long-term memory
-    (semantically relevant past chunks from ChromaDB) into the system prompt.
-    The caller is responsible for fully forming the user message text, including
-    any viewer context such as nicknames or first-time welcome framing.
-
-    query: raw user message before nickname framing (used as ChromaDB search query).
-           Falls back to text if not provided.
-    username: raw Twitch username, passed to the query rewriter for context.
-    """
-    from shared.llm_client import get_completion, rewrite_queries
-    from shared.chroma_client import query_chroma_multi
-
-    context_type = ContextType.TWITCH_TTS if tts else ContextType.TWITCH_CHAT
-    context_parts: list[str] = []
-
-    # Long-term memory: semantically relevant past chunks (with query rewriting)
-    _logged_queries: list[str] | None = []  # track for call log; None = SKIP
-    try:
-        recent_context = "\n".join(e["text"] for e in _buffer[-15:])
-        search_queries = await rewrite_queries(query or text, recent_context, username or "a viewer")
-        _logged_queries = search_queries  # None means SKIP
-
-        if search_queries is not None:  # None means SKIP — no retrieval needed
-            docs = query_chroma_multi(search_queries)
-            if docs:
-                context_parts.append(
-                    "RELEVANT PAST CONTEXT:\n"
-                    "The following excerpts from past stream logs may be relevant to the viewer's message. "
-                    "Use them to inform your response if helpful — do not quote them directly.\n"
-                    + "\n---\n".join(docs)
-                )
-    except Exception as e:
-        logger.warning("Query rewriting/ChromaDB failed (no context injected): %s", e)
-
-    # Short-term memory: last 2 chunks from current session
-    if recent_chunks:
-        recent_text = "\n---\n".join(c["text"] for c in recent_chunks)
-        context_parts.append(
-            "RECENT CONVERSATION:\n"
-            "The most recent chat activity from this stream, for continuity:\n"
-            + recent_text
-        )
-
-    system_prompt = build_system_prompt(
-        _load_personality(),
-        context_type,
-        "\n\n".join(context_parts),
-    )
-    response = await get_completion(system_prompt=system_prompt, user_message=text)
-
-    from shared.call_logger import log_llm_call
-    log_llm_call(
-        service="twitch",
-        username=username or "",
-        raw_message=query or text,
-        rewrite_queries=_logged_queries,
-        system_prompt=system_prompt,
-        user_message=text,
-        response=response,
-    )
-
-    return response
 
 async def _post_to_streamerbot(
     message: str, 
@@ -616,16 +531,13 @@ async def receive_mention(
     if not text:
         return {"status": "ok", "triggered": False}
 
-    if username:
-        nickname = _get_nickname(username)
-        prompt = (
-            f"A viewer named {nickname} (username: {username}, call them '{nickname}') "
-            f'says: "{text}" -- Please respond directly to them.'
-        )
-    else:
-        prompt = text
-
-    response_text = await _generate_response(prompt, tts=tts, query=text, username=username)
+    response_text = await ask_berries_twitch(
+        query=text,
+        username=username,
+        tts=tts,
+        recent_chunks=list(recent_chunks),
+        recent_buffer_text="\n".join(e["text"] for e in _buffer[-15:]),
+    )
     await _post_to_streamerbot(response_text, chat=chat, tts=tts, callback_url=callback_url, action_id=action_id)
 
     return {
