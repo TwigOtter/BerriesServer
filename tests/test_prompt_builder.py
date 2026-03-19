@@ -89,13 +89,13 @@ def test_empty_context_produces_no_trailing_whitespace():
     assert result == result.strip()
 
 
-def test_context_comes_after_instructions():
-    """Context should follow the response instructions, not precede them."""
+def test_instructions_come_after_context():
+    """Instructions should be last — a final reminder before the user message."""
     context = "UNIQUE_CONTEXT_MARKER"
     result = build_system_prompt(PERSONALITY, ContextType.DISCORD_MENTION, context)
     instructions_pos = result.find("RESPONSE INSTRUCTIONS")
     context_pos = result.find(context)
-    assert instructions_pos < context_pos
+    assert context_pos < instructions_pos
 
 
 def test_parts_separated_by_double_newline():

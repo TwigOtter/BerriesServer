@@ -14,20 +14,26 @@ from datetime import datetime, timezone
 
 from shared.config import LOGS_DIR
 
-LOGS_DIR.mkdir(parents=True, exist_ok=True)
+_log: logging.Logger | None = None
 
-_handler = logging.handlers.RotatingFileHandler(
-    LOGS_DIR / "llm_calls.jsonl",
-    maxBytes=5 * 1024 * 1024,
-    backupCount=1,
-    encoding="utf-8",
-)
-_handler.setFormatter(logging.Formatter("%(message)s"))
 
-_log = logging.getLogger("llm_calls")
-_log.setLevel(logging.DEBUG)
-_log.addHandler(_handler)
-_log.propagate = False  # don't bleed into root/service loggers
+def _get_log() -> logging.Logger:
+    """Lazy-init the logger so the log file isn't opened at import time."""
+    global _log
+    if _log is None:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(
+            LOGS_DIR / "llm_calls.jsonl",
+            maxBytes=5 * 1024 * 1024,
+            backupCount=1,
+            encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        _log = logging.getLogger("llm_calls")
+        _log.setLevel(logging.DEBUG)
+        _log.addHandler(handler)
+        _log.propagate = False  # don't bleed into root/service loggers
+    return _log
 
 
 def log_llm_call(
@@ -58,4 +64,4 @@ def log_llm_call(
         "user_message": user_message,
         "response": response,
     }
-    _log.debug(json.dumps(record, ensure_ascii=False))
+    _get_log().debug(json.dumps(record, ensure_ascii=False))
