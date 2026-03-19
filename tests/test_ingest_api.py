@@ -38,6 +38,7 @@ async def client(mock_collection, tmp_path):
         patch("shared.ask_berries.get_completion", new=AsyncMock(return_value="spooky test response")),
         patch("shared.ask_berries.rewrite_queries", new=AsyncMock(return_value=["test query"])),
         patch("ingest_api.main.get_collection", return_value=mock_collection),
+        patch("shared.chroma_client.get_collection", return_value=mock_collection),
         patch("ingest_api.main._post_to_streamerbot", new=AsyncMock()),
         patch("shared.user_db.init_db"),
         patch("shared.user_db.upsert_user"),
