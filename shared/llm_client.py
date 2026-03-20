@@ -46,6 +46,7 @@ async def rewrite_queries(
         if raw.upper() == "SKIP":
             return None
         queries = [q.strip() for q in raw.splitlines() if q.strip()]
+        _log.debug("rewrite_queries got parsed queries: %r", queries)
         return queries if queries else [message]
     except Exception as e:
         _log.warning("rewrite_queries failed, falling back to raw message: %s", e)

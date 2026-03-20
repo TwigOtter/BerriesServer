@@ -1,5 +1,5 @@
 """
-data/documents/embed_documents.py
+scripts/embed_documents.py
 
 Chunks and embeds .md and .txt files from data/documents/input/ into ChromaDB,
 then moves processed files to data/documents/archive/.
@@ -9,7 +9,7 @@ re-inserting, so editing a file and re-dropping it into input/ always reflects
 the latest content.
 
 Usage (from project root with venv active):
-    python data/documents/embed_documents.py [-t N] [-o N] [--dry-run]
+    python scripts/embed_documents.py [-t N] [-o N] [--dry-run]
 
     -t N / --token-limit N   Max tokens per chunk (default: 512)
     -o N / --overlap N       Overlap tokens carried into next chunk (default: 128)
@@ -28,8 +28,8 @@ from shared.tokenizer import count_tokens
 from shared.chroma_client import get_collection
 
 SUPPORTED_EXTENSIONS = {".md", ".txt"}
-INPUT_DIR = Path(__file__).parent / "input"
-ARCHIVE_DIR = Path(__file__).parent / "archive"
+INPUT_DIR = Path(__file__).parent.parent / "data" / "documents" / "input"
+ARCHIVE_DIR = Path(__file__).parent.parent / "data" / "documents" / "archive"
 
 
 def split_into_units(text: str, token_limit: int) -> list[str]:

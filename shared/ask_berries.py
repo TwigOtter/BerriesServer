@@ -239,7 +239,7 @@ async def ask_berries_discord_mention(
         username=display_name,
         raw_message=query,
         rewrite_queries=search_queries,
-        system_prompt=system_prompt,
+        system_prompt=(f"[personality.txt]\n[ContextType.DISCORD_MENTION]\n{system_suffix}"),
         user_message=user_message,
         response=response,
     )
@@ -314,6 +314,17 @@ async def ask_berries_twitch_going_live(
       1. Twig asks Berries to write a going-live Discord announcement → announcement text
       2. Berries picks a Giphy search query to accompany the announcement → gif_query string
     """
+
+    # Check for empty title/category or malformed Streamer.Bot input (e.g. "%string%")
+    # Return early if the input looks invalid, to avoid making LLM calls that are likely to fail or produce low-quality output.
+    # We have a reputation to uphold, after all!
+    if not stream_title.strip() or not stream_category.strip() or re.match(r"^%[^%]+%$", stream_title) or re.match(r"^%[^%]+%$", stream_category):
+        log.warning(
+            f"ask_berries_twitch_going_live — stream_title or stream_category is empty or malformed. "
+            f"Received title: {stream_title!r}, category: {stream_category!r}",
+        )
+        return None
+
     personality = _load_personality()
     system = "\n\n".join([personality, _TWIG_COLLABORATION_INSTRUCTION])
 
