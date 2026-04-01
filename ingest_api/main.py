@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ingest_api")
 
 from shared.config import (
