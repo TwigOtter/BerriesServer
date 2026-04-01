@@ -515,7 +515,6 @@ async def stream_invoke(
         return {"status": "error", "response": None}
 
     await _post_to_streamerbot(response_text, chat=True, tts=True)
-    logger.info("/event/stream-invoke — posted: %r", response_text)
     return {"status": "ok", "response": response_text}
 
 

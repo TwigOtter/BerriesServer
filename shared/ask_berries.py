@@ -177,7 +177,7 @@ async def ask_berries_twitch(
         context_type,
         "\n\n".join(context_parts),
     )
-    response = await ask_berries(system_prompt=system_prompt, user_message=user_message)
+    response = await ask_berries(system_prompt=system_prompt, user_message=user_message, max_tokens=80)
 
     log_llm_call(
         service="twitch",
@@ -347,7 +347,7 @@ async def ask_berries_streaming(
     )
     user_message = f"{recent_buffer_text}\n\nContinue your stream." if recent_buffer_text else "Continue your stream."
 
-    response = await ask_berries(system_prompt=system_prompt, user_message=user_message, max_tokens=120)
+    response = await ask_berries(system_prompt=system_prompt, user_message=user_message, max_tokens=80)
 
     log_llm_call(
         service="twitch_streaming",
