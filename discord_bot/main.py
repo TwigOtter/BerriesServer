@@ -855,6 +855,37 @@ async def going_live(request: Request) -> dict:
     return {"status": "ok"}
 
 
+@webhook_app.post("/event/going-live-april-fools")
+async def going_live_april_fools(request: Request) -> dict:
+    """
+    Called manually by Twig when the April Fools stream starts.
+    Posts a handwritten announcement directly to Discord — no LLM call.
+    Include the full message text in the request body; role ping is prepended automatically.
+
+    Expected body:
+        {"message": "your handwritten announcement here", 
+        "gif_query": "optional giphy search query for a celebratory GIF"}
+    """
+    body = await request.json()
+    message = body.get("message", "").strip()
+    gif_query = body.get("gif_query", "").strip()
+    if not message:
+        log.warning("going-live-april-fools received empty message — skipping")
+        return {"status": "error", "reason": "no message provided"}
+
+    log.info("April Fools going-live event received")
+    role_ping = f"<@&{DISCORD_STREAM_ROLE_ID}>\n" if DISCORD_STREAM_ROLE_ID else ""
+    await _post_to_announce(role_ping + message)
+    
+    if gif_query:
+        gif_url = await _fetch_gif(gif_query)
+        if gif_url:
+            channel = bot.get_channel(DISCORD_ANNOUNCE_CHANNEL_ID)
+            if channel:
+                await channel.send(gif_url)
+    return {"status": "ok"}
+
+
 # ── Entry point ────────────────────────────────────────────────────────────
 
 async def _main() -> None:

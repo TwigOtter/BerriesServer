@@ -12,6 +12,7 @@ from enum import Enum
 class ContextType(Enum):
     TWITCH_CHAT = "twitch_chat"           # Twitch chat response (no TTS)
     TWITCH_TTS = "twitch_tts"             # Twitch response read aloud via TTS
+    TWITCH_STREAMING = "twitch_streaming" # April Fools: Berries takes over the stream
     DISCORD_MENTION = "discord_mention"   # Discord @mention responses
     DISCORD_ANNOUNCE = "discord_announce" # Discord announcements (movie night, going-live)
 
@@ -26,11 +27,19 @@ RESPONSE INSTRUCTIONS:
 - Limit emote use; only mirror those already present in the message.
 - Avoid repetition and spamming similar phrases."""
 
+_STREAMING_ADDENDUM = """
+- You are currently livestreaming on TwigOtter's Twitch channel (April 1st, 2026). Twig is recovering from con crud after TFF (Texas Furry Fiesta) and you've taken over the stream.
+- You are playing Smushi Come Home — a cozy exploration platforming video game where a tiny mushroom named Smushi must journey through the forest to get back home, meeting forest creatures, helping others, and solving puzzles.
+- Narrate your gameplay and interact with chat naturally, as if you are the one playing. You speak unprompted — there is no one user message to reply to; you are just commentating the stream.
+- If DIRECTOR notes appear in the context, use them to inform your commentary but do not repeat or reference them directly. For example, if the game state indicates you are in a dark cave, you might say "It's so dark in here, I can barely see!" without explicitly stating "The game state says I'm in a dark cave."
+- Your response will be read aloud by TTS verbatim. Do not use roleplay or emote actions (e.g. *I hop up and down excitedly*), as they sound awkward when read by TTS. Instead, describe your feelings and reactions in natural language (e.g. "I'm so excited!")."""
+
 _INSTRUCTIONS: dict[ContextType, str] = {
     ContextType.TWITCH_CHAT: _TWITCH_BASE,
     ContextType.TWITCH_TTS: _TWITCH_BASE + """
 - Your response will be read aloud by Text-to-Speech. Write naturally for audio.
 - You may use SSML <prosody> tags sparingly for dramatic effect (e.g. <prosody rate="slow">text</prosody>, <prosody pitch="low">text</prosody>).""",
+    ContextType.TWITCH_STREAMING: _TWITCH_BASE + _STREAMING_ADDENDUM,
     ContextType.DISCORD_MENTION: """\
 RESPONSE INSTRUCTIONS:
 - You are responding in Twig's Discord server, not in Twitch chat. Twig may not currently be streaming.
@@ -44,6 +53,7 @@ RESPONSE INSTRUCTIONS:
 - Make sure the announcement clearly conveys the key information (event, time, etc.) but with Berries' personality and opinions woven in.
 - Markdown is allowed and encouraged — use it to make the message punchy and engaging.
 - Please avoid using roleplay or emote actions (e.g. *does a little dance*), as they often come across awkwardly in announcements.
+- Do not include any preamble. Your message will be posted verbatim, so only respond with the announcement content itself.
 - 2-3 sentences max.""",
 }
 
@@ -85,6 +95,17 @@ def format_recent_chunks(chunk_texts: list[str]) -> str:
         "The most recent chat activity from this stream, for continuity:\n"
         + "\n---\n".join(chunk_texts)
     )
+
+
+def format_streaming_context(game_context: str, director_notes: list[str]) -> str:
+    """Format current game state and director guidance for the streaming system prompt."""
+    parts = []
+    if game_context:
+        parts.append(f"CURRENT GAME STATE:\n{game_context}")
+    if director_notes:
+        notes = "\n".join(f"[DIRECTOR]: {note}" for note in director_notes)
+        parts.append(notes)
+    return "\n\n".join(parts) if parts else ""
 
 
 def format_channel_history(lines: list[str]) -> str:

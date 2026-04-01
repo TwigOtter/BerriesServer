@@ -6,12 +6,15 @@ preprocesses them, manages the chunking buffer, embeds and stores chunks,
 and fans out triggers to berries_bot.
 
 Endpoints:
-    POST /event/chat         — chat messages (with user subscription data)
-    POST /event/speech       — speech-to-text transcription
-    POST /event/mention      — response request (triggers Berries to reply)
+    POST /event/chat          — chat messages (with user subscription data)
+    POST /event/speech        — speech-to-text transcription
+    POST /event/mention       — response request (triggers Berries to reply)
     POST /event/stream-update — stream title/category change (Streamer.bot update event)
-    POST /event/stream       — generic Twitch events (raids, subs, polls, predictions, etc.)
-    GET  /health             — status check
+    POST /event/stream        — generic Twitch events (raids, subs, polls, predictions, etc.)
+    POST /event/stream-invoke — April Fools: trigger Berries to speak as the streamer
+    POST /event/director      — April Fools: queue a silent director note from Twig (not logged)
+    POST /event/game-context  — April Fools: update the consolidated game state string
+    GET  /health              — status check
 
 Run with:
     uvicorn ingest_api.main:app --host 0.0.0.0 --port 8000
@@ -42,7 +45,8 @@ from shared.config import (
     TRANSCRIPTS_DIR,
     USERS_DB_PATH,
 )
-from shared.ask_berries import ask_berries_twitch
+from shared.ask_berries import ask_berries_twitch, ask_berries_streaming
+from shared.llm_client import get_completion
 
 
 def get_collection():
@@ -79,6 +83,10 @@ _session_chatters: set[str] = set()
 
 # Current stream metadata — updated by /event/stream-update
 _stream_metadata: dict = {"title": "", "category": ""}
+
+# April Fools streaming state
+_game_context: str = ""          # Consolidated game state; updated by /event/game-context
+_director_queue: list[str] = []  # One-shot guidance from Twig; consumed on each /event/stream-invoke
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -442,6 +450,106 @@ async def going_live(
         logger.warning("Failed to forward going-live to discord_bot: %s", e)
 
     return {"status": "ok"}
+
+
+@app.post("/event/stream-invoke")
+async def stream_invoke(
+    request: Request,
+    x_secret: str | None = Header(default=None),
+) -> dict:
+    """
+    Trigger Berries to speak as the streamer.
+    Called by Streamer.bot (foot pedal, post-TTS event, StreamDeck button, etc.).
+    Drains the director queue, generates a response, and posts it to Streamer.bot via TTS.
+
+    Expected body: {} (empty is fine)
+    """
+    global _director_queue
+
+    _auth_check(x_secret)
+
+    notes = _director_queue.copy()
+    _director_queue.clear()
+
+    recent_buf = "\n".join(e["text"] for e in _buffer[-15:])
+    response_text = await ask_berries_streaming(
+        recent_chunks=list(recent_chunks),
+        recent_buffer_text=recent_buf,
+        game_context=_game_context,
+        director_notes=notes,
+    )
+
+    if not response_text:
+        logger.warning("/event/stream-invoke — LLM returned empty response")
+        return {"status": "error", "response": None}
+
+    await _post_to_streamerbot(response_text, chat=True, tts=True)
+    logger.info("/event/stream-invoke — posted: %r", response_text)
+    return {"status": "ok", "response": response_text}
+
+
+@app.post("/event/director")
+async def receive_director(
+    request: Request,
+    x_secret: str | None = Header(default=None),
+) -> dict:
+    """
+    Receive a silent director note from Twig (via STT mic on a dedicated mode).
+    Queued for injection into the next /event/stream-invoke call.
+    NOT written to the transcript buffer or ChromaDB.
+
+    Expected body:
+        {"text": "chat is asking about the glider, maybe mention it"}
+    """
+    _auth_check(x_secret)
+    body = await request.json()
+
+    note = body.get("text", "").strip()
+    if not note:
+        return {"status": "dropped"}
+
+    _director_queue.append(note)
+    logger.info("/event/director — queued note (%d total): %r", len(_director_queue), note)
+    return {"status": "queued", "queued_count": len(_director_queue)}
+
+
+@app.post("/event/game-context")
+async def receive_game_context(
+    request: Request,
+    x_secret: str | None = Header(default=None),
+) -> dict:
+    """
+    Update the persistent game state string.
+    New info is LLM-consolidated with existing context so named NPCs, locations,
+    and objectives accumulate across updates rather than being overwritten.
+
+    Expected body:
+        {"text": "just entered the mushroom village, met the owl guide Hoot earlier"}
+    """
+    global _game_context
+
+    _auth_check(x_secret)
+    body = await request.json()
+
+    new_info = body.get("text", "").strip()
+    if not new_info:
+        return {"status": "no-op"}
+
+    if _game_context:
+        consolidation_prompt = (
+            "You are a concise game-state summarizer. "
+            "Merge the new information into the existing summary. "
+            "Preserve named characters, locations, and objectives still relevant. "
+            "Output only the merged summary in 2-3 sentences, no preamble."
+        )
+        user_msg = f"Existing state:\n{_game_context}\n\nNew information:\n{new_info}"
+        merged = await get_completion(consolidation_prompt, user_msg, max_tokens=150)
+        _game_context = merged.strip() if merged else new_info
+    else:
+        _game_context = new_info
+
+    logger.info("/event/game-context — updated: %r", _game_context)
+    return {"status": "updated", "game_context": _game_context}
 
 
 @app.get("/health")
