@@ -11,6 +11,7 @@ Endpoints:
     POST /event/mention       — response request (triggers Berries to reply)
     POST /event/stream-update — stream title/category change (Streamer.bot update event)
     POST /event/stream        — generic Twitch events (raids, subs, polls, predictions, etc.)
+    POST /event/going-live-april-fools — April Fools: forward handwritten announcement to Discord bot
     POST /event/stream-invoke — April Fools: trigger Berries to speak as the streamer
     POST /event/director      — April Fools: queue a silent director note from Twig (not logged)
     POST /event/game-context  — April Fools: update the consolidated game state string
@@ -448,6 +449,35 @@ async def going_live(
             )
     except Exception as e:
         logger.warning("Failed to forward going-live to discord_bot: %s", e)
+
+    return {"status": "ok"}
+
+
+@app.post("/event/going-live-april-fools")
+async def going_live_april_fools(
+    request: Request,
+    x_secret: str | None = Header(default=None),
+) -> dict:
+    """
+    Receive an April Fools going-live event from Streamer.bot and forward to the Discord bot webhook.
+
+    Expected body:
+        {"message": "your handwritten announcement here"}
+    """
+    _auth_check(x_secret)
+    body = await request.json()
+
+    logger.info("/event/going-live-april-fools — forwarding to discord_bot")
+
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{DISCORD_BOT_WEBHOOK_URL}/event/going-live-april-fools",
+                json=body,
+                timeout=10.0,
+            )
+    except Exception as e:
+        logger.warning("Failed to forward going-live-april-fools to discord_bot: %s", e)
 
     return {"status": "ok"}
 
