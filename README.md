@@ -180,7 +180,8 @@ Copy `.env.example` to `.env`. Key variables:
 |---|---|---|
 | `LLM_BACKEND` | `anthropic` | `"anthropic"` or `"ollama"` |
 | `ANTHROPIC_API_KEY` | — | Claude API key |
-| `ANTHROPIC_MODEL` | — | e.g. `claude-haiku-4-5-20251001` |
+| `ANTHROPIC_CHAT_MODEL` | `claude-sonnet-4-6` | Personality/chatbot calls (loads personality.txt) |
+| `ANTHROPIC_ASSIST_MODEL` | `claude-haiku-4-5-20251001` | Utility tasks: query rewriting, gif queries |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama endpoint |
 | `OLLAMA_MODEL` | — | e.g. `llama3.1` |
 | `INGEST_SECRET` | — | Shared auth header between Streamer.bot and all services |
