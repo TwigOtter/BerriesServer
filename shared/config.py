@@ -43,7 +43,8 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1")
 LLM_BACKEND = os.getenv("LLM_BACKEND", "anthropic")
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+ANTHROPIC_ASSIST_MODEL = os.getenv("ANTHROPIC_ASSIST_MODEL", "claude-haiku-4-5-20251001")   # query rewriting, gif queries, utility tasks
+ANTHROPIC_CHAT_MODEL = os.getenv("ANTHROPIC_CHAT_MODEL", "claude-sonnet-4-6")               # personality/chatbot calls (loads personality.txt)
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
