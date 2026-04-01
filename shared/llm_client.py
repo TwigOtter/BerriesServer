@@ -13,7 +13,7 @@ import logging
 
 from shared.config import (
     LLM_BACKEND,
-    ANTHROPIC_API_KEY, ANTHROPIC_MODEL,
+    ANTHROPIC_API_KEY, ANTHROPIC_ASSIST_MODEL, ANTHROPIC_CHAT_MODEL,
     OLLAMA_BASE_URL, OLLAMA_MODEL,
 )
 
@@ -41,7 +41,7 @@ async def rewrite_queries(
     system = "You generate ChromaDB search queries. Follow the instructions exactly."
 
     try:
-        raw = await get_completion(system_prompt=system, user_message=prompt, max_tokens=128)
+        raw = await get_completion(system_prompt=system, user_message=prompt, max_tokens=128, model=ANTHROPIC_ASSIST_MODEL)
         raw = raw.strip()
         if raw.upper() == "SKIP":
             return None
@@ -53,24 +53,27 @@ async def rewrite_queries(
         return [message]
 
 
-async def get_completion(system_prompt: str, user_message: str, max_tokens: int = 256) -> str:
+async def get_completion(system_prompt: str, user_message: str, max_tokens: int = 256, model: str | None = None) -> str:
     """
     Send a prompt to the configured LLM backend and return the response text.
     Raises ValueError if LLM_BACKEND is not recognized.
+
+    model: override the model used for this call. Defaults to ANTHROPIC_CHAT_MODEL (Sonnet).
+           Pass ANTHROPIC_ASSIST_MODEL explicitly for utility tasks (query rewriting, gif queries, etc.).
     """
     if LLM_BACKEND == "anthropic":
-        return await _anthropic_completion(system_prompt, user_message, max_tokens)
+        return await _anthropic_completion(system_prompt, user_message, max_tokens, model or ANTHROPIC_CHAT_MODEL)
     elif LLM_BACKEND == "ollama":
         return await _ollama_completion(system_prompt, user_message, max_tokens)
     else:
         raise ValueError(f"Unknown LLM_BACKEND: {LLM_BACKEND!r}. Use 'anthropic' or 'ollama'.")
 
 
-async def _anthropic_completion(system_prompt: str, user_message: str, max_tokens: int) -> str:
+async def _anthropic_completion(system_prompt: str, user_message: str, max_tokens: int, model: str) -> str:
     import anthropic
     client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     message = await client.messages.create(
-        model=ANTHROPIC_MODEL,
+        model=model,
         max_tokens=max_tokens,
         system=system_prompt,
         messages=[{"role": "user", "content": user_message}],
