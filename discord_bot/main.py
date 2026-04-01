@@ -277,6 +277,9 @@ async def _fetch_gif(query: str) -> str | None:
 
 async def _post_to_announce(message: str) -> bool:
     """Post a message to the announce channel. Returns True on success."""
+    if not message.strip():
+        log.debug("Not posting empty message to announce channel")
+        return False
     if not DISCORD_ANNOUNCE_CHANNEL_ID:
         log.warning("DISCORD_ANNOUNCE_CHANNEL_ID not set; cannot post announcement")
         return False
@@ -849,9 +852,7 @@ async def going_live(request: Request) -> dict:
 
     await _post_to_announce(message)
     if gif_url:
-        channel = bot.get_channel(DISCORD_ANNOUNCE_CHANNEL_ID)
-        if channel:
-            await channel.send(gif_url)
+        await _post_to_announce(gif_url)
     return {"status": "ok"}
 
 
@@ -864,25 +865,21 @@ async def going_live_april_fools(request: Request) -> dict:
 
     Expected body:
         {"message": "your handwritten announcement here", 
-        "gif_query": "optional giphy search query for a celebratory GIF"}
+        "gif_url": "optional giphy URL for a specific GIF"}
     """
     body = await request.json()
     message = body.get("message", "").strip()
-    gif_query = body.get("gif_query", "").strip()
+    gif_url = body.get("gif_url", "").strip()
     if not message:
         log.warning("going-live-april-fools received empty message — skipping")
         return {"status": "error", "reason": "no message provided"}
 
     log.info("April Fools going-live event received")
     role_ping = f"<@&{DISCORD_STREAM_ROLE_ID}>\n" if DISCORD_STREAM_ROLE_ID else ""
-    await _post_to_announce(role_ping + message)
-    
-    if gif_query:
-        gif_url = await _fetch_gif(gif_query)
-        if gif_url:
-            channel = bot.get_channel(DISCORD_ANNOUNCE_CHANNEL_ID)
-            if channel:
-                await channel.send(gif_url)
+
+    await _post_to_announce(role_ping + message + f"\nhttps://twitch.tv/{TWITCH_CHANNEL}")
+    if gif_url:
+        await _post_to_announce(gif_url)
     return {"status": "ok"}
 
 
