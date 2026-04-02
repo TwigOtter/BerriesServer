@@ -38,8 +38,7 @@ _STREAMING_ADDENDUM = """
 _INSTRUCTIONS: dict[ContextType, str] = {
     ContextType.TWITCH_CHAT: _TWITCH_BASE,
     ContextType.TWITCH_TTS: _TWITCH_BASE + """
-- Your response will be read aloud by Text-to-Speech. Write naturally for audio.
-- You may use SSML <prosody> tags sparingly for dramatic effect (e.g. <prosody rate="slow">text</prosody>, <prosody pitch="low">text</prosody>).""",
+- Your response will be read aloud by Text-to-Speech. Write naturally for audio.""",
     ContextType.TWITCH_STREAMING: _TWITCH_BASE + _STREAMING_ADDENDUM,
     ContextType.DISCORD_MENTION: """\
 RESPONSE INSTRUCTIONS:
