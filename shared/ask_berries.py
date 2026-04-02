@@ -324,10 +324,17 @@ async def ask_berries_streaming(
         game_context:       Current consolidated game state string (updated by Twig via endpoint).
         director_notes:     One-shot guidance from Twig, consumed and cleared after each invoke.
     """
+
+    # Add director_notes to recent_buffer_text for query rewriting and ChromaDB retrieval, so that the LLM can use them to inform what past context is relevant. They will also be included in the system prompt via format_streaming_context.
+    augmented_recent_buffer_text = recent_buffer_text
+    if director_notes:
+        notes_text = "[IMPORTANT DIRECTOR NOTES]:\n" + "\n".join(director_notes)
+        augmented_recent_buffer_text = f"{recent_buffer_text}\n{notes_text}" if recent_buffer_text else notes_text
+  
     docs, search_queries = await _chroma_context(
-        query="mushroom forest game cozy stream gameplay",
-        recent_context=recent_buffer_text,
-        username="streaming",
+        query="Please prioritize queries based on director notes and recent chat activity in the Twitch stream, so they can help inform Berries' commentary.",
+        recent_context=augmented_recent_buffer_text,
+        username="Twig",
     )
 
     context_parts: list[str] = []
