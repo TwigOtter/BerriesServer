@@ -304,7 +304,7 @@ async def receive_chat(
         flags.append("first!")
     if bits:
         flags.append(f"{bits} bits")
-    logger.info("/event/chat — %s (%s) [%s]: %r", username, user_id, ", ".join(flags), raw_text)
+    logger.info("/event/chat — %s (%s) [%s]: %r", display_name, user_id, ", ".join(flags), raw_text)
 
     # Always upsert user profile, even if the message itself gets dropped.
     # This ensures rename tracking fires on every chat event regardless of content.
@@ -321,13 +321,13 @@ async def receive_chat(
         t_id=parsed_user_id,
     )
 
-    cleaned = _preprocess_message(username, raw_text, text_stripped, emote_count)
+    cleaned = _preprocess_message(display_name, raw_text, text_stripped, emote_count)
     if cleaned is None:
         return {"status": "dropped"}
 
-    _buffer.append({"source": username, "text": cleaned, "timestamp": time.time()})
+    _buffer.append({"source": display_name, "text": cleaned, "timestamp": time.time()})
     _last_event_time = time.time()
-    _session_chatters.add(username)
+    _session_chatters.add(display_name)
 
     if _buffer_token_count() >= CHUNK_TOKEN_LIMIT:
         await _flush_buffer(reason="token_limit")
