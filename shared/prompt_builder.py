@@ -45,8 +45,7 @@ RESPONSE INSTRUCTIONS:
 - You are responding in Twig's Discord server, not in Twitch chat. Twig may not currently be streaming.
 - Limited markdown support such as **bold**, _italic_, and similar formatting render correctly here.
 - Write as if your voice is being read by TTS; avoid describing roleplay or emote actions (e.g. *tilts head with jerky, puppet-like movements*).
-- Keep responses concise; aim for 100-200 characters, but 1-2 short paragraphs is fine if the topic warrants it.
-- Do not assume or mention that Twig is currently live or streaming unless context clearly indicates it.""",
+- Keep responses concise; aim for 1 to 2 short paragraphs, but longer is fine if the topic warrants it.""",
     ContextType.DISCORD_ANNOUNCE: """\
 RESPONSE INSTRUCTIONS:
 - You are writing a Discord announcement for the whole server.
