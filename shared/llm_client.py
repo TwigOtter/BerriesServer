@@ -53,42 +53,48 @@ async def rewrite_queries(
         return [message]
 
 
-async def get_completion(system_prompt: str, user_message: str, max_tokens: int = 256, model: str | None = None) -> str:
+async def get_completion(
+    system_prompt: str,
+    user_message: str = "",
+    max_tokens: int = 256,
+    model: str | None = None,
+    messages: list[dict] | None = None,
+) -> str:
     """
     Send a prompt to the configured LLM backend and return the response text.
     Raises ValueError if LLM_BACKEND is not recognized.
 
-    model: override the model used for this call. Defaults to ANTHROPIC_CHAT_MODEL (Sonnet).
-           Pass ANTHROPIC_ASSIST_MODEL explicitly for utility tasks (query rewriting, gif queries, etc.).
+    model:    override the model used for this call. Defaults to ANTHROPIC_CHAT_MODEL (Sonnet).
+              Pass ANTHROPIC_ASSIST_MODEL explicitly for utility tasks (query rewriting, gif queries, etc.).
+    messages: full conversation history as a list of {"role": ..., "content": ...} dicts.
+              When provided, takes precedence over user_message.
     """
+    resolved_messages = messages or [{"role": "user", "content": user_message}]
     if LLM_BACKEND == "anthropic":
-        return await _anthropic_completion(system_prompt, user_message, max_tokens, model or ANTHROPIC_CHAT_MODEL)
+        return await _anthropic_completion(system_prompt, resolved_messages, max_tokens, model or ANTHROPIC_CHAT_MODEL)
     elif LLM_BACKEND == "ollama":
-        return await _ollama_completion(system_prompt, user_message, max_tokens)
+        return await _ollama_completion(system_prompt, resolved_messages, max_tokens)
     else:
         raise ValueError(f"Unknown LLM_BACKEND: {LLM_BACKEND!r}. Use 'anthropic' or 'ollama'.")
 
 
-async def _anthropic_completion(system_prompt: str, user_message: str, max_tokens: int, model: str) -> str:
+async def _anthropic_completion(system_prompt: str, messages: list[dict], max_tokens: int, model: str) -> str:
     import anthropic
     client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     message = await client.messages.create(
         model=model,
         max_tokens=max_tokens,
         system=system_prompt,
-        messages=[{"role": "user", "content": user_message}],
+        messages=messages,
     )
     return message.content[0].text
 
 
-async def _ollama_completion(system_prompt: str, user_message: str, max_tokens: int) -> str:
+async def _ollama_completion(system_prompt: str, messages: list[dict], max_tokens: int) -> str:
     import httpx
     payload = {
         "model": OLLAMA_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message},
-        ],
+        "messages": [{"role": "system", "content": system_prompt}, *messages],
         "stream": False,
         "options": {"num_predict": max_tokens},
     }

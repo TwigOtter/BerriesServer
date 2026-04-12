@@ -102,11 +102,15 @@ def cleanup_response(text: str) -> str:
 
 async def ask_berries(
     system_prompt: str,
-    user_message: str,
+    user_message: str = "",
     max_tokens: int = 256,
+    messages: list[dict] | None = None,
 ) -> str | None:
-    """Raw LLM call via get_completion(). No logging — callers handle that."""
-    return await get_completion(system_prompt=system_prompt, user_message=user_message, max_tokens=max_tokens)
+    """Raw LLM call via get_completion(). No logging — callers handle that.
+
+    messages: full conversation history. When provided, takes precedence over user_message.
+    """
+    return await get_completion(system_prompt=system_prompt, user_message=user_message, max_tokens=max_tokens, messages=messages)
 
 
 async def ask_berries_discord(
@@ -291,12 +295,17 @@ async def ask_berries_movie_announcement(
         return None
     announcement = cleanup_response(announcement)
 
+    gif_prompt = (
+        "Thank you! Can you now generate a search query for Giphy to find a gif that fits the vibe "
+        "of your announcement? Reply with ONLY the search query, 2-5 words, no punctuation, no explanation."
+    )
     gif_query = await ask_berries(
         system_prompt=system,
-        user_message=(
-            "Thank you! Can you now generate a search query for Giphy to find a gif that fits the vibe "
-            "of your announcement? Reply with ONLY the search query, 2-5 words, no punctuation, no explanation."
-        ),
+        messages=[
+            {"role": "user", "content": user_msg},
+            {"role": "assistant", "content": announcement},
+            {"role": "user", "content": gif_prompt},
+        ],
         max_tokens=32,
     )
     gif_query = (gif_query or "").strip()
@@ -410,12 +419,17 @@ async def ask_berries_twitch_going_live(
         return None
     announcement = cleanup_response(announcement)
 
+    gif_prompt = (
+        "Great! Now generate a Giphy search query for a gif that fits the vibe of your announcement. "
+        "Reply with ONLY the search query, 2-5 words, no punctuation, no explanation."
+    )
     gif_query = await ask_berries(
         system_prompt=system,
-        user_message=(
-            "Great! Now generate a Giphy search query for a gif that fits the vibe of your announcement. "
-            "Reply with ONLY the search query, 2-5 words, no punctuation, no explanation."
-        ),
+        messages=[
+            {"role": "user", "content": user_msg},
+            {"role": "assistant", "content": announcement},
+            {"role": "user", "content": gif_prompt},
+        ],
         max_tokens=32,
     )
     gif_query = (gif_query or "").strip()
