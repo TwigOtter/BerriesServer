@@ -13,6 +13,7 @@ Run with:
 """
 
 import asyncio
+import json
 import logging
 import logging.handlers
 import random
@@ -63,6 +64,7 @@ from shared.movie_db import (
     mark_watched,
     remove_suggestion,
     remove_watched,
+    toggle_vote,
 )
 from shared.user_db import init_db as init_user_db, link_discord, get_twitch_link, get_discord_for_twitch, set_nickname, set_nickname_for_discord, upsert_discord_user
 
@@ -475,6 +477,145 @@ class MovieSelectView(discord.ui.View):
         self.stop()
 
 
+# ── Movie suggestion list UI ────────────────────────────────────────────────
+
+_MOVIE_LIST_PAGE_SIZE = 5
+
+
+def _build_movie_list_embed(movies: list[dict], page: int, total_pages: int) -> discord.Embed:
+    """Build an embed for one page of the movie suggestion list."""
+    embed = discord.Embed(title="Movie Night Suggestions", color=discord.Color.dark_purple())
+    start = page * _MOVIE_LIST_PAGE_SIZE
+    page_movies = movies[start : start + _MOVIE_LIST_PAGE_SIZE]
+    lines = []
+    for i, m in enumerate(page_movies, 1):
+        voters = json.loads(m.get("voters") or "[]")
+        vote_str = f" · 👍 {len(voters)}" if voters else ""
+        lines.append(
+            f"**{start + i}. {m['title']}** ({m['year']}){vote_str}\n"
+            f"*suggested by {m['suggested_by']}*"
+        )
+    embed.description = "\n\n".join(lines) if lines else "*Nothing here.*"
+    total = len(movies)
+    embed.set_footer(
+        text=(
+            f"Page {page + 1} of {total_pages} · "
+            f"{total} movie{'s' if total != 1 else ''} suggested · "
+            "Click 👍 buttons below to vote"
+        )
+    )
+    return embed
+
+
+class _VoteButton(discord.ui.Button):
+    def __init__(self, movie: dict, position: int, page: int, vote_count: int, view_id: str) -> None:
+        label = f"👍 #{position}" if vote_count == 0 else f"👍 #{position} ({vote_count})"
+        super().__init__(
+            style=discord.ButtonStyle.secondary,
+            label=label,
+            custom_id=f"vote::{view_id}::{page}::{movie['imdb_id']}",
+            row=0,
+        )
+        self._movie = movie
+        self._page = page
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        now_voted, total_votes = toggle_vote(self._movie["imdb_id"], str(interaction.user.id))
+        movies = get_all_suggestions()
+        if not movies:
+            await interaction.response.edit_message(
+                content="*peers from the shadows* ...the suggestion list is empty now.",
+                embed=None,
+                view=None,
+            )
+            return
+        total_pages = max(1, (len(movies) + _MOVIE_LIST_PAGE_SIZE - 1) // _MOVIE_LIST_PAGE_SIZE)
+        page = min(self._page, total_pages - 1)
+        embed = _build_movie_list_embed(movies, page, total_pages)
+        new_view = MovieListView(movies, page, view_id=self.view._view_id)
+        await interaction.response.edit_message(embed=embed, view=new_view)
+        action = "voted for" if now_voted else "removed your vote from"
+        vote_word = "vote" if total_votes == 1 else "votes"
+        await interaction.followup.send(
+            f"*nods* ...you {action} **{self._movie['title']}**! ({total_votes} {vote_word} total)",
+            ephemeral=True,
+        )
+
+
+class _PrevButton(discord.ui.Button):
+    def __init__(self, current_page: int, view_id: str) -> None:
+        super().__init__(
+            style=discord.ButtonStyle.primary,
+            label="◀ Prev",
+            custom_id=f"mprev::{view_id}::{current_page}",
+            disabled=current_page == 0,
+            row=1,
+        )
+        self._page = current_page
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        movies = get_all_suggestions()
+        total_pages = max(1, (len(movies) + _MOVIE_LIST_PAGE_SIZE - 1) // _MOVIE_LIST_PAGE_SIZE)
+        new_page = max(0, min(self._page - 1, total_pages - 1))
+        embed = _build_movie_list_embed(movies, new_page, total_pages)
+        new_view = MovieListView(movies, new_page, view_id=self.view._view_id)
+        await interaction.response.edit_message(embed=embed, view=new_view)
+
+
+class _PageLabelButton(discord.ui.Button):
+    def __init__(self, page: int, total_pages: int, view_id: str) -> None:
+        super().__init__(
+            style=discord.ButtonStyle.secondary,
+            label=f"{page + 1} / {total_pages}",
+            custom_id=f"plabel::{view_id}",
+            disabled=True,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        pass  # Disabled; callback is never reached
+
+
+class _NextButton(discord.ui.Button):
+    def __init__(self, current_page: int, total_pages: int, view_id: str) -> None:
+        super().__init__(
+            style=discord.ButtonStyle.primary,
+            label="Next ▶",
+            custom_id=f"mnext::{view_id}::{current_page}",
+            disabled=current_page >= total_pages - 1,
+            row=1,
+        )
+        self._page = current_page
+        self._total_pages = total_pages
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        movies = get_all_suggestions()
+        total_pages = max(1, (len(movies) + _MOVIE_LIST_PAGE_SIZE - 1) // _MOVIE_LIST_PAGE_SIZE)
+        new_page = min(self._page + 1, total_pages - 1)
+        embed = _build_movie_list_embed(movies, new_page, total_pages)
+        new_view = MovieListView(movies, new_page, view_id=self.view._view_id)
+        await interaction.response.edit_message(embed=embed, view=new_view)
+
+
+class MovieListView(discord.ui.View):
+    """Paginated movie suggestion list with per-movie vote buttons."""
+
+    def __init__(self, movies: list[dict], page: int = 0, view_id: str | None = None) -> None:
+        super().__init__(timeout=300)
+        self._view_id = view_id or uuid.uuid4().hex[:8]
+        total_pages = max(1, (len(movies) + _MOVIE_LIST_PAGE_SIZE - 1) // _MOVIE_LIST_PAGE_SIZE)
+        start = page * _MOVIE_LIST_PAGE_SIZE
+        page_movies = movies[start : start + _MOVIE_LIST_PAGE_SIZE]
+
+        for i, m in enumerate(page_movies):
+            voters = json.loads(m.get("voters") or "[]")
+            self.add_item(_VoteButton(m, start + i + 1, page, len(voters), self._view_id))
+
+        self.add_item(_PrevButton(page, self._view_id))
+        self.add_item(_PageLabelButton(page, total_pages, self._view_id))
+        self.add_item(_NextButton(page, total_pages, self._view_id))
+
+
 # ── Slash commands ─────────────────────────────────────────────────────────
 
 @bot.tree.command(name="ping", description="Check if Berries is lurking")
@@ -674,8 +815,7 @@ async def movie_suggest_add(interaction: discord.Interaction, title: str) -> Non
 
 
 @suggest_group.command(name="list", description="See the current movie night suggestion list")
-@app_commands.describe(page="Page number (default: 1)")
-async def movie_suggest_list(interaction: discord.Interaction, page: int = 1) -> None:
+async def movie_suggest_list(interaction: discord.Interaction) -> None:
     suggestions = get_all_suggestions()
     if not suggestions:
         await interaction.response.send_message(
@@ -684,32 +824,10 @@ async def movie_suggest_list(interaction: discord.Interaction, page: int = 1) ->
         )
         return
 
-    # Build all entry lines, then pack them into pages under 2000 chars.
-    header = "**Movie Night Suggestions**\n"
-    entries = [
-        f"{i}. **{m['title']}** ({m['year']}) — suggested by {m['suggested_by']}"
-        for i, m in enumerate(suggestions, 1)
-    ]
-
-    pages: list[list[str]] = []
-    current: list[str] = []
-    current_len = len(header)
-    for entry in entries:
-        # +1 for the newline between entries, +20 for the footer line
-        if current_len + len(entry) + 1 + 20 > 2000 and current:
-            pages.append(current)
-            current = []
-            current_len = len(header)
-        current.append(entry)
-        current_len += len(entry) + 1
-    if current:
-        pages.append(current)
-
-    total_pages = len(pages)
-    page = max(1, min(page, total_pages))
-    footer = f"\nPage {page} of {total_pages}"
-    content = header + "\n".join(pages[page - 1]) + footer
-    await interaction.response.send_message(content, ephemeral=True)
+    total_pages = max(1, (len(suggestions) + _MOVIE_LIST_PAGE_SIZE - 1) // _MOVIE_LIST_PAGE_SIZE)
+    embed = _build_movie_list_embed(suggestions, 0, total_pages)
+    view = MovieListView(suggestions, 0)
+    await interaction.response.send_message(embed=embed, view=view)
 
 
 @suggest_group.command(name="remove", description="Remove a movie from the suggestion list")
