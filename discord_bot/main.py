@@ -479,10 +479,32 @@ class MovieSelectView(discord.ui.View):
 
 # ── Movie suggestion list UI ────────────────────────────────────────────────
 
-_MOVIE_LIST_PAGE_SIZE = 5
+_MOVIE_LIST_PAGE_SIZE = 20
+
+_SORT_MODES = ["added", "votes", "title", "year"]
+_SORT_LABELS = {
+    "added": "Added ↑",
+    "votes": "Top Voted",
+    "title": "Title A–Z",
+    "year": "Year",
+}
 
 
-def _build_movie_list_embed(movies: list[dict], page: int, total_pages: int) -> discord.Embed:
+def _sort_movies(movies: list[dict], mode: str) -> list[dict]:
+    """Return a sorted copy of the suggestion list."""
+    if mode == "votes":
+        return sorted(movies, key=lambda m: (-len(json.loads(m.get("voters") or "[]")), m["suggested_at"]))
+    if mode == "title":
+        return sorted(movies, key=lambda m: m["title"].lower())
+    if mode == "year":
+        return sorted(movies, key=lambda m: (m.get("year") or "0", m["title"].lower()))
+    # "added" — oldest first
+    return sorted(movies, key=lambda m: m["suggested_at"])
+
+
+def _build_movie_list_embed(
+    movies: list[dict], page: int, total_pages: int, sort_mode: str, user_id: str
+) -> discord.Embed:
     """Build an embed for one page of the movie suggestion list."""
     embed = discord.Embed(title="Movie Night Suggestions", color=discord.Color.dark_purple())
     start = page * _MOVIE_LIST_PAGE_SIZE
@@ -490,9 +512,11 @@ def _build_movie_list_embed(movies: list[dict], page: int, total_pages: int) -> 
     lines = []
     for i, m in enumerate(page_movies, 1):
         voters = json.loads(m.get("voters") or "[]")
+        voted = user_id in voters
         vote_str = f" · 👍 {len(voters)}" if voters else ""
+        check = "✅ " if voted else ""
         lines.append(
-            f"**{start + i}. {m['title']}** ({m['year']}){vote_str}\n"
+            f"{check}**{start + i}. {m['title']}** ({m['year']}){vote_str}\n"
             f"*suggested by {m['suggested_by']}*"
         )
     embed.description = "\n\n".join(lines) if lines else "*Nothing here.*"
@@ -501,45 +525,59 @@ def _build_movie_list_embed(movies: list[dict], page: int, total_pages: int) -> 
         text=(
             f"Page {page + 1} of {total_pages} · "
             f"{total} movie{'s' if total != 1 else ''} suggested · "
-            "Click 👍 buttons below to vote"
+            f"Sort: {_SORT_LABELS[sort_mode]}"
         )
     )
     return embed
 
 
-class _VoteButton(discord.ui.Button):
-    def __init__(self, movie: dict, position: int, page: int, vote_count: int, view_id: str) -> None:
-        label = f"👍 #{position}" if vote_count == 0 else f"👍 #{position} ({vote_count})"
+class _VoteSelectMenu(discord.ui.Select):
+    """Dropdown for toggling a vote on one movie from the current page."""
+
+    def __init__(
+        self, page_movies: list[dict], page: int, user_id: str, view_id: str
+    ) -> None:
+        start = page * _MOVIE_LIST_PAGE_SIZE
+        options = []
+        for i, m in enumerate(page_movies):
+            voters = json.loads(m.get("voters") or "[]")
+            voted = user_id in voters
+            vote_count = len(voters)
+            position = start + i + 1
+            prefix = "✅ " if voted else ""
+            label = f"{prefix}#{position}. {m['title']} ({m['year']})"[:100]
+            vote_word = "vote" if vote_count == 1 else "votes"
+            desc = f"👍 {vote_count} {vote_word} · suggested by {m['suggested_by']}"[:100]
+            options.append(
+                discord.SelectOption(label=label, value=m["imdb_id"], description=desc)
+            )
         super().__init__(
-            style=discord.ButtonStyle.secondary,
-            label=label,
-            custom_id=f"vote::{view_id}::{page}::{movie['imdb_id']}",
+            placeholder="🗳️ Pick a movie to toggle your vote...",
+            options=options,
+            custom_id=f"mvotemenu::{view_id}",
             row=0,
+            min_values=1,
+            max_values=1,
         )
-        self._movie = movie
         self._page = page
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        now_voted, total_votes = toggle_vote(self._movie["imdb_id"], str(interaction.user.id))
+        v = self.view  # type: MovieListView
+        imdb_id = self.values[0]
+        movie_title = next((m["title"] for m in v._movies if m["imdb_id"] == imdb_id), imdb_id)
+        now_voted, total_votes = toggle_vote(imdb_id, str(interaction.user.id))
+
         movies = get_all_suggestions()
-        if not movies:
-            await interaction.response.edit_message(
-                content="*peers from the shadows* ...the suggestion list is empty now.",
-                embed=None,
-                view=None,
-            )
-            return
-        total_pages = max(1, (len(movies) + _MOVIE_LIST_PAGE_SIZE - 1) // _MOVIE_LIST_PAGE_SIZE)
+        sorted_movies = _sort_movies(movies, v._sort_mode)
+        total_pages = max(1, (len(sorted_movies) + _MOVIE_LIST_PAGE_SIZE - 1) // _MOVIE_LIST_PAGE_SIZE)
         page = min(self._page, total_pages - 1)
-        embed = _build_movie_list_embed(movies, page, total_pages)
-        new_view = MovieListView(movies, page, view_id=self.view._view_id)
-        await interaction.response.edit_message(embed=embed, view=new_view)
+        user_id = str(interaction.user.id)
+        embed = _build_movie_list_embed(sorted_movies, page, total_pages, v._sort_mode, user_id)
+        new_view = MovieListView(sorted_movies, page, v._sort_mode, user_id, view_id=v._view_id)
         action = "voted for" if now_voted else "removed your vote from"
         vote_word = "vote" if total_votes == 1 else "votes"
-        await interaction.followup.send(
-            f"*nods* ...you {action} **{self._movie['title']}**! ({total_votes} {vote_word} total)",
-            ephemeral=True,
-        )
+        log.info("Vote toggle: %s %s %r (%d %s)", interaction.user, action, movie_title, total_votes, vote_word)
+        await interaction.response.edit_message(embed=embed, view=new_view)
 
 
 class _PrevButton(discord.ui.Button):
@@ -554,11 +592,14 @@ class _PrevButton(discord.ui.Button):
         self._page = current_page
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        v = self.view  # type: MovieListView
         movies = get_all_suggestions()
-        total_pages = max(1, (len(movies) + _MOVIE_LIST_PAGE_SIZE - 1) // _MOVIE_LIST_PAGE_SIZE)
+        sorted_movies = _sort_movies(movies, v._sort_mode)
+        total_pages = max(1, (len(sorted_movies) + _MOVIE_LIST_PAGE_SIZE - 1) // _MOVIE_LIST_PAGE_SIZE)
         new_page = max(0, min(self._page - 1, total_pages - 1))
-        embed = _build_movie_list_embed(movies, new_page, total_pages)
-        new_view = MovieListView(movies, new_page, view_id=self.view._view_id)
+        user_id = str(interaction.user.id)
+        embed = _build_movie_list_embed(sorted_movies, new_page, total_pages, v._sort_mode, user_id)
+        new_view = MovieListView(sorted_movies, new_page, v._sort_mode, user_id, view_id=v._view_id)
         await interaction.response.edit_message(embed=embed, view=new_view)
 
 
@@ -586,34 +627,69 @@ class _NextButton(discord.ui.Button):
             row=1,
         )
         self._page = current_page
-        self._total_pages = total_pages
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        v = self.view  # type: MovieListView
         movies = get_all_suggestions()
-        total_pages = max(1, (len(movies) + _MOVIE_LIST_PAGE_SIZE - 1) // _MOVIE_LIST_PAGE_SIZE)
+        sorted_movies = _sort_movies(movies, v._sort_mode)
+        total_pages = max(1, (len(sorted_movies) + _MOVIE_LIST_PAGE_SIZE - 1) // _MOVIE_LIST_PAGE_SIZE)
         new_page = min(self._page + 1, total_pages - 1)
-        embed = _build_movie_list_embed(movies, new_page, total_pages)
-        new_view = MovieListView(movies, new_page, view_id=self.view._view_id)
+        user_id = str(interaction.user.id)
+        embed = _build_movie_list_embed(sorted_movies, new_page, total_pages, v._sort_mode, user_id)
+        new_view = MovieListView(sorted_movies, new_page, v._sort_mode, user_id, view_id=v._view_id)
+        await interaction.response.edit_message(embed=embed, view=new_view)
+
+
+class _SortButton(discord.ui.Button):
+    def __init__(self, sort_mode: str, view_id: str) -> None:
+        super().__init__(
+            style=discord.ButtonStyle.secondary,
+            label=f"🔃 {_SORT_LABELS[sort_mode]}",
+            custom_id=f"msort::{view_id}::{sort_mode}",
+            row=1,
+        )
+        self._sort_mode = sort_mode
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        v = self.view  # type: MovieListView
+        next_idx = (_SORT_MODES.index(self._sort_mode) + 1) % len(_SORT_MODES)
+        next_mode = _SORT_MODES[next_idx]
+        movies = get_all_suggestions()
+        sorted_movies = _sort_movies(movies, next_mode)
+        total_pages = max(1, (len(sorted_movies) + _MOVIE_LIST_PAGE_SIZE - 1) // _MOVIE_LIST_PAGE_SIZE)
+        user_id = str(interaction.user.id)
+        embed = _build_movie_list_embed(sorted_movies, 0, total_pages, next_mode, user_id)
+        new_view = MovieListView(sorted_movies, 0, next_mode, user_id, view_id=v._view_id)
         await interaction.response.edit_message(embed=embed, view=new_view)
 
 
 class MovieListView(discord.ui.View):
-    """Paginated movie suggestion list with per-movie vote buttons."""
+    """Private per-user paginated movie list with vote dropdown and sort cycling."""
 
-    def __init__(self, movies: list[dict], page: int = 0, view_id: str | None = None) -> None:
+    def __init__(
+        self,
+        movies: list[dict],
+        page: int = 0,
+        sort_mode: str = "added",
+        user_id: str = "",
+        view_id: str | None = None,
+    ) -> None:
         super().__init__(timeout=300)
+        self._movies = movies
+        self._page = page
+        self._sort_mode = sort_mode
+        self._user_id = user_id
         self._view_id = view_id or uuid.uuid4().hex[:8]
+
         total_pages = max(1, (len(movies) + _MOVIE_LIST_PAGE_SIZE - 1) // _MOVIE_LIST_PAGE_SIZE)
         start = page * _MOVIE_LIST_PAGE_SIZE
         page_movies = movies[start : start + _MOVIE_LIST_PAGE_SIZE]
 
-        for i, m in enumerate(page_movies):
-            voters = json.loads(m.get("voters") or "[]")
-            self.add_item(_VoteButton(m, start + i + 1, page, len(voters), self._view_id))
-
+        self.add_item(_VoteSelectMenu(page_movies, page, user_id, self._view_id))
         self.add_item(_PrevButton(page, self._view_id))
         self.add_item(_PageLabelButton(page, total_pages, self._view_id))
         self.add_item(_NextButton(page, total_pages, self._view_id))
+        self.add_item(_SortButton(sort_mode, self._view_id))
 
 
 # ── Slash commands ─────────────────────────────────────────────────────────
@@ -824,10 +900,12 @@ async def movie_suggest_list(interaction: discord.Interaction) -> None:
         )
         return
 
-    total_pages = max(1, (len(suggestions) + _MOVIE_LIST_PAGE_SIZE - 1) // _MOVIE_LIST_PAGE_SIZE)
-    embed = _build_movie_list_embed(suggestions, 0, total_pages)
-    view = MovieListView(suggestions, 0)
-    await interaction.response.send_message(embed=embed, view=view)
+    sorted_movies = _sort_movies(suggestions, "added")
+    total_pages = max(1, (len(sorted_movies) + _MOVIE_LIST_PAGE_SIZE - 1) // _MOVIE_LIST_PAGE_SIZE)
+    user_id = str(interaction.user.id)
+    embed = _build_movie_list_embed(sorted_movies, 0, total_pages, "added", user_id)
+    view = MovieListView(sorted_movies, 0, "added", user_id)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 @suggest_group.command(name="remove", description="Remove a movie from the suggestion list")
