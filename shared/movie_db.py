@@ -8,6 +8,7 @@ of how a title was typed.
 Stored in the same DB file as users (USERS_DB_PATH).
 """
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 
@@ -33,9 +34,15 @@ def init_movie_db() -> None:
                 suggested_by TEXT,
                 suggested_at TEXT NOT NULL,
                 status       TEXT NOT NULL DEFAULT 'suggested',
-                watched_at   TEXT
+                watched_at   TEXT,
+                voters       TEXT NOT NULL DEFAULT '[]'
             )
         """)
+        # Migration: add voters column to databases created before this feature
+        try:
+            conn.execute("ALTER TABLE movies ADD COLUMN voters TEXT NOT NULL DEFAULT '[]'")
+        except Exception:
+            pass  # Column already exists
         conn.commit()
 
 
@@ -124,3 +131,30 @@ def remove_watched(imdb_id: str) -> bool:
         )
         conn.commit()
     return cursor.rowcount > 0
+
+
+def toggle_vote(imdb_id: str, discord_id: str) -> tuple[bool, int]:
+    """
+    Toggle a user's vote for a suggested movie.
+    Returns (now_voted, total_votes): now_voted is True if the vote was added, False if removed.
+    Returns (False, 0) if the movie doesn't exist.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT voters FROM movies WHERE imdb_id = ? AND status = 'suggested'", (imdb_id,)
+        ).fetchone()
+        if row is None:
+            return False, 0
+        voters: list[str] = json.loads(row["voters"] or "[]")
+        if discord_id in voters:
+            voters.remove(discord_id)
+            now_voted = False
+        else:
+            voters.append(discord_id)
+            now_voted = True
+        conn.execute(
+            "UPDATE movies SET voters = ? WHERE imdb_id = ?",
+            (json.dumps(voters), imdb_id),
+        )
+        conn.commit()
+    return now_voted, len(voters)
