@@ -52,10 +52,14 @@ Receives all events from Streamer.bot. Preprocesses, chunks, embeds, and respond
 |---|---|---|
 | `POST /event/chat` | Every chat message | `userName`, `displayName`, `userId`, `msgId`, `message`, `messageStripped`, `emoteCount`, `role`, `bits`, `firstMessage`, `isSubscribed`, `subscriptionTier`, `monthsSubscribed`, `isVip`, `isModerator` |
 | `POST /event/speech` | STT transcription | `speaker`, `text` |
-| `POST /event/mention` | Berries response request | `text`, `CHAT` (bool), `TTS` (bool), `log` (bool) |
+| `POST /event/mention` | Berries response request | `text`, `username`, `CHAT` (bool), `TTS` (bool), `log` (bool), `callback_url` (optional), `action_id` (optional) |
 | `POST /event/stream-update` | Title/category change | `title`, `category` |
 | `POST /event/stream` | Any other Twitch event | `type`, `text` (pre-formatted by Streamer.bot) |
 | `POST /event/going-live` | Stream start | `title`, `category` — forwarded to discord_bot |
+| `POST /event/going-live-april-fools` | April Fools going-live | `message` — forwards handwritten announcement to discord_bot |
+| `POST /event/stream-invoke` | April Fools: trigger Berries to speak | `{}` — drains director queue, generates and TTS-posts a response |
+| `POST /event/director` | April Fools: silent director note | `text` — queued for next `/event/stream-invoke`, not logged |
+| `POST /event/game-context` | April Fools: update game state | `text` — LLM-consolidated with existing game context |
 | `GET /health` | Status check | — |
 
 All endpoints require `X-Secret: <INGEST_SECRET>` header.
@@ -76,12 +80,13 @@ All LLM calls go through here. Never called directly from non-service code.
 | `ask_berries_discord_mention()` | `discord_bot` | Discord @mention: same pipeline for Discord |
 | `ask_berries_movie_announcement()` | `discord_bot` | Movie night: ChromaDB lookup + two-call announcement+gif pipeline |
 | `ask_berries_twitch_going_live()` | `discord_bot` | Going-live: two-call announcement+gif pipeline |
-| `ask_berries_discord()` | `discord_bot` | One-off in-character replies (e.g. movie suggestion rejection) |
+| `ask_berries_streaming()` | `ingest_api` | April Fools streaming: game context + director notes + ChromaDB commentary pipeline |
+| `ask_berries_discord()` | — | One-off in-character replies (available but currently unused) |
 | `ask_berries()` | internal | Raw LLM call, no logging |
 
 **Per-response context assembly (mention pipelines):**
 1. Load `berries_bot/personality.txt` as system prompt base
-2. Rewrite query → query ChromaDB for `CHROMA_N_RESULTS` semantically similar past chunks
+2. Rewrite query → query ChromaDB for `CHROMA_N_RESULTS` semantically similar past chunks; discard any with L2 distance > `CHROMA_L2_THRESHOLD`
 3. Inject last 2 flushed chunks from `recent_chunks` deque (Twitch short-term memory)
 4. Call LLM → return response to service for delivery
 
@@ -116,6 +121,8 @@ Same personality + ChromaDB context as the Twitch bot.
 |---|---|
 | `data/transcripts/stream_chat_YYYY-MM-DD.jsonl` | Ground truth stream archive, append-only |
 | `data/chromadb/` | Semantic vector index (rebuilt from `.jsonl` if corrupted) |
+| `data/huggingface/` | Local model cache for `nomic-embed-text-v1` |
+| `data/documents/` | Drop `.md`/`.txt` files into `input/` to embed; processed files move to `archive/` |
 | `data/users.db` | User profiles, passively built from chat events |
 | `data/movies.db` | Movie suggestions and watch history |
 | In-memory `deque(maxlen=2)` | Last 2 chunks for short-term context |
@@ -184,9 +191,11 @@ Copy `.env.example` to `.env`. Key variables:
 | `ANTHROPIC_ASSIST_MODEL` | `claude-haiku-4-5-20251001` | Utility tasks: query rewriting, gif queries |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama endpoint |
 | `OLLAMA_MODEL` | — | e.g. `llama3.1` |
+| `INGEST_HOST` | `0.0.0.0` | ingest_api bind host |
+| `INGEST_PORT` | `8000` | ingest_api bind port |
 | `INGEST_SECRET` | — | Shared auth header between Streamer.bot and all services |
 | `STREAMERBOT_CALLBACK_URL` | — | Where Berries POSTs his replies |
-| `STREAMERBOT_RESPONSE_ACTION_ID` | - | Action ID to send back to Streamer.bot |
+| `STREAMERBOT_RESPONSE_ACTION_ID` | — | Action ID to send back to Streamer.bot |
 | `TWITCH_CHANNEL` | `twigotter` | Channel name for going-live announcement links |
 | `DISCORD_TOKEN` | — | Discord bot token |
 | `DISCORD_BERRIES_CHANNEL_WHITELIST_IDS` | — | Comma-separated channel IDs; redirect check skipped here |
@@ -207,7 +216,8 @@ Copy `.env.example` to `.env`. Key variables:
 | `CHUNK_OVERLAP_SEC` | `30` | Seconds of Twitch messages to carry over after a flush |
 | `DISCORD_CHUNK_OVERLAP_MESSAGES` | `5` | Discord messages to carry over after a flush |
 | `CHROMA_N_RESULTS` | `4` | ChromaDB results per query |
-| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Local sentence-transformers model |
+| `CHROMA_L2_THRESHOLD` | `0.8` | Discard ChromaDB results with L2 distance above this |
+| `EMBEDDING_MODEL` | `nomic-ai/nomic-embed-text-v1` | Local sentence-transformers model |
 
 ---
 
@@ -224,16 +234,23 @@ BerriesServer/
 ├── shared/
 │   ├── ask_berries.py       # LLM hub — all response pipelines
 │   ├── call_logger.py       # structured LLM call logging
-│   ├── chroma_client.py     # ChromaDB singleton
+│   ├── chroma_client.py     # ChromaDB singleton + multi-query with L2 filtering
 │   ├── config.py            # centralized config from .env
 │   ├── llm_client.py        # Anthropic + Ollama abstraction + query rewriter
 │   ├── movie_db.py          # movie suggestions/history SQLite CRUD
 │   ├── prompt_builder.py    # system prompt assembly + context formatters
 │   ├── tokenizer.py         # token counting (tiktoken)
 │   └── user_db.py           # user profile SQLite CRUD
+├── scripts/
+│   ├── reindex_twitch.py    # rebuild ChromaDB from Twitch transcript JSONL files
+│   ├── reindex_discord.py   # fetch and index Discord watch channel history
+│   ├── embed_documents.py   # chunk and embed .md/.txt files from data/documents/input/
+│   └── query_chroma.py      # interactive CLI for testing ChromaDB queries
 ├── data/
 │   ├── transcripts/         # stream_chat_YYYY-MM-DD.jsonl files
 │   ├── chromadb/            # ChromaDB persistence
+│   ├── huggingface/         # local model cache (nomic-embed-text-v1)
+│   ├── documents/           # input/ → embed_documents.py → archive/
 │   ├── users.db             # auto-created on first run
 │   └── movies.db            # auto-created on first run
 ├── deploy/
@@ -260,7 +277,8 @@ BerriesServer/
 |---|---|
 | `fastapi` + `uvicorn` | HTTP server |
 | `chromadb` | Vector DB |
-| `sentence-transformers` | Local embedding model (`all-MiniLM-L6-v2`) |
+| `sentence-transformers` | Local embedding model (`nomic-ai/nomic-embed-text-v1`) |
+| `einops` | Required by `nomic-embed-text-v1` |
 | `anthropic` | Anthropic API client |
 | `discord.py` | Discord bot |
 | `tiktoken` | Token counting |
