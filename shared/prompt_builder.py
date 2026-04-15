@@ -12,7 +12,6 @@ from enum import Enum
 class ContextType(Enum):
     TWITCH_CHAT = "twitch_chat"           # Twitch chat response (no TTS)
     TWITCH_TTS = "twitch_tts"             # Twitch response read aloud via TTS
-    TWITCH_STREAMING = "twitch_streaming" # April Fools: Berries takes over the stream
     DISCORD_MENTION = "discord_mention"   # Discord @mention responses
     DISCORD_ANNOUNCE = "discord_announce" # Discord announcements (movie night, going-live)
 
@@ -27,19 +26,10 @@ RESPONSE INSTRUCTIONS:
 - Avoid repetition and spamming similar phrases.
 - Respond in 1-2 sentences only. Never more."""
 
-_STREAMING_ADDENDUM = """
-- You are currently livestreaming on TwigOtter's Twitch channel (April 1st, 2026). Twig is recovering from con crud after TFF (Texas Furry Fiesta) and you've taken over the stream.
-- You are playing Smushi Come Home — a cozy exploration platforming video game where a tiny mushroom named Smushi must journey through the forest to get back home, meeting forest creatures, helping others, and solving puzzles.
-- Narrate your gameplay and interact with chat naturally, as if you are the one playing. You speak unprompted — there is no one user message to reply to; you are just commentating the stream.
-- IMPORTANT: Do NOT invent or describe specific in-game actions, discoveries, puzzles, or events that are not mentioned in the CURRENT GAME STATE context. You cannot see the screen. Only reference gameplay details that appear in the provided context. If no game state is available, react to chat or speak generally about the game's premise.
-- If DIRECTOR notes appear in the context, use them to inform your commentary but do not repeat or reference them directly.
-- Your response will be read aloud by TTS verbatim. Do not use roleplay or emote actions (e.g. *I hop up and down excitedly*), as they sound awkward when read by TTS. Instead, describe your feelings and reactions in natural language (e.g. "I'm so excited!")."""
-
 _INSTRUCTIONS: dict[ContextType, str] = {
     ContextType.TWITCH_CHAT: _TWITCH_BASE,
     ContextType.TWITCH_TTS: _TWITCH_BASE + """
 - Your response will be read aloud by Text-to-Speech. Write naturally for audio.""",
-    ContextType.TWITCH_STREAMING: _TWITCH_BASE + _STREAMING_ADDENDUM,
     ContextType.DISCORD_MENTION: """\
 RESPONSE INSTRUCTIONS:
 - You are responding in Twig's Discord server, not in Twitch chat. Twig may not currently be streaming.
@@ -94,17 +84,6 @@ def format_recent_chunks(chunk_texts: list[str]) -> str:
         "The most recent chat activity from this stream, for continuity:\n"
         + "\n---\n".join(chunk_texts)
     )
-
-
-def format_streaming_context(game_context: str, director_notes: list[str]) -> str:
-    """Format current game state and director guidance for the streaming system prompt."""
-    parts = []
-    if game_context:
-        parts.append(f"CURRENT GAME STATE:\n{game_context}")
-    if director_notes:
-        notes = "\n".join(f"[DIRECTOR]: {note}" for note in director_notes)
-        parts.append(notes)
-    return "\n\n".join(parts) if parts else ""
 
 
 def format_channel_history(lines: list[str]) -> str:

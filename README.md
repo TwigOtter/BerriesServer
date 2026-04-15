@@ -52,14 +52,10 @@ Receives all events from Streamer.bot. Preprocesses, chunks, embeds, and respond
 |---|---|---|
 | `POST /event/chat` | Every chat message | `userName`, `displayName`, `userId`, `msgId`, `message`, `messageStripped`, `emoteCount`, `role`, `bits`, `firstMessage`, `isSubscribed`, `subscriptionTier`, `monthsSubscribed`, `isVip`, `isModerator` |
 | `POST /event/speech` | STT transcription | `speaker`, `text` |
-| `POST /event/mention` | Berries response request | `text`, `username`, `CHAT` (bool), `TTS` (bool), `log` (bool), `callback_url` (optional), `action_id` (optional) |
+| `POST /event/mention` | Berries response request | `text`, `username`, `CHAT` (bool), `TTS` (bool), `log` (bool) |
 | `POST /event/stream-update` | Title/category change | `title`, `category` |
 | `POST /event/stream` | Any other Twitch event | `type`, `text` (pre-formatted by Streamer.bot) |
 | `POST /event/going-live` | Stream start | `title`, `category` — forwarded to discord_bot |
-| `POST /event/going-live-april-fools` | April Fools going-live | `message` — forwards handwritten announcement to discord_bot |
-| `POST /event/stream-invoke` | April Fools: trigger Berries to speak | `{}` — drains director queue, generates and TTS-posts a response |
-| `POST /event/director` | April Fools: silent director note | `text` — queued for next `/event/stream-invoke`, not logged |
-| `POST /event/game-context` | April Fools: update game state | `text` — LLM-consolidated with existing game context |
 | `GET /health` | Status check | — |
 
 All endpoints require `X-Secret: <INGEST_SECRET>` header.
@@ -80,7 +76,6 @@ All LLM calls go through here. Never called directly from non-service code.
 | `ask_berries_discord_mention()` | `discord_bot` | Discord @mention: same pipeline for Discord |
 | `ask_berries_movie_announcement()` | `discord_bot` | Movie night: ChromaDB lookup + two-call announcement+gif pipeline |
 | `ask_berries_twitch_going_live()` | `discord_bot` | Going-live: two-call announcement+gif pipeline |
-| `ask_berries_streaming()` | `ingest_api` | April Fools streaming: game context + director notes + ChromaDB commentary pipeline |
 | `ask_berries_discord()` | — | One-off in-character replies (available but currently unused) |
 | `ask_berries()` | internal | Raw LLM call, no logging |
 

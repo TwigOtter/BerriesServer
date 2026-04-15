@@ -11,10 +11,7 @@ Endpoints:
     POST /event/mention       — response request (triggers Berries to reply)
     POST /event/stream-update — stream title/category change (Streamer.bot update event)
     POST /event/stream        — generic Twitch events (raids, subs, polls, predictions, etc.)
-    POST /event/going-live-april-fools — April Fools: forward handwritten announcement to Discord bot
-    POST /event/stream-invoke — April Fools: trigger Berries to speak as the streamer
-    POST /event/director      — April Fools: queue a silent director note from Twig (not logged)
-    POST /event/game-context  — April Fools: update the consolidated game state string
+    POST /event/going-live    — stream start (forwarded to Discord bot)
     GET  /health              — status check
 
 Run with:
@@ -22,6 +19,7 @@ Run with:
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import time
@@ -47,8 +45,7 @@ from shared.config import (
     TRANSCRIPTS_DIR,
     USERS_DB_PATH,
 )
-from shared.ask_berries import ask_berries_twitch, ask_berries_streaming
-from shared.llm_client import get_completion
+from shared.ask_berries import ask_berries_twitch
 
 
 def get_collection():
@@ -86,16 +83,18 @@ _session_chatters: set[str] = set()
 # Current stream metadata — updated by /event/stream-update
 _stream_metadata: dict = {"title": "", "category": ""}
 
-# April Fools streaming state
-_game_context: str = ""          # Consolidated game state; updated by /event/game-context
-_director_queue: list[str] = []  # One-shot guidance from Twig; consumed on each /event/stream-invoke
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 def _auth_check(x_secret: str | None) -> None:
-    """Reject requests that don't carry the shared secret (if configured)."""
-    if INGEST_SECRET and x_secret != INGEST_SECRET:
+    """Reject requests that don't carry the shared secret (if configured).
+
+    Uses hmac.compare_digest for constant-time comparison — protects against
+    timing side-channels that could otherwise leak the secret byte-by-byte.
+    """
+    if not INGEST_SECRET:
+        return
+    if not hmac.compare_digest(x_secret or "", INGEST_SECRET):
         raise HTTPException(status_code=403, detail="Forbidden")
 
 
@@ -446,140 +445,13 @@ async def going_live(
             await client.post(
                 f"{DISCORD_BOT_WEBHOOK_URL}/event/going-live",
                 json=body,
+                headers={"X-Secret": INGEST_SECRET} if INGEST_SECRET else {},
                 timeout=10.0,
             )
     except Exception as e:
         logger.warning("Failed to forward going-live to discord_bot: %s", e)
 
     return {"status": "ok"}
-
-
-@app.post("/event/going-live-april-fools")
-async def going_live_april_fools(
-    request: Request,
-    x_secret: str | None = Header(default=None),
-) -> dict:
-    """
-    Receive an April Fools going-live event from Streamer.bot and forward to the Discord bot webhook.
-
-    Expected body:
-        {"message": "your handwritten announcement here"}
-    """
-    _auth_check(x_secret)
-    body = await request.json()
-
-    logger.info("/event/going-live-april-fools — forwarding to discord_bot")
-
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"{DISCORD_BOT_WEBHOOK_URL}/event/going-live-april-fools",
-                json=body,
-                timeout=10.0,
-            )
-    except Exception as e:
-        logger.warning("Failed to forward going-live-april-fools to discord_bot: %s", e)
-
-    return {"status": "ok"}
-
-
-@app.post("/event/stream-invoke")
-async def stream_invoke(
-    request: Request,
-    x_secret: str | None = Header(default=None),
-) -> dict:
-    """
-    Trigger Berries to speak as the streamer.
-    Called by Streamer.bot (foot pedal, post-TTS event, StreamDeck button, etc.).
-    Drains the director queue, generates a response, and posts it to Streamer.bot via TTS.
-
-    Expected body: {} (empty is fine)
-    """
-    global _director_queue
-
-    _auth_check(x_secret)
-
-    notes = _director_queue.copy()
-    _director_queue.clear()
-
-    recent_buf = "\n".join(e["text"] for e in _buffer[-15:])
-    response_text = await ask_berries_streaming(
-        recent_chunks=list(recent_chunks),
-        recent_buffer_text=recent_buf,
-        game_context=_game_context,
-        director_notes=notes,
-    )
-
-    if not response_text:
-        logger.warning("/event/stream-invoke — LLM returned empty response")
-        return {"status": "error", "response": None}
-
-    await _post_to_streamerbot(response_text, chat=True, tts=True)
-    return {"status": "ok", "response": response_text}
-
-
-@app.post("/event/director")
-async def receive_director(
-    request: Request,
-    x_secret: str | None = Header(default=None),
-) -> dict:
-    """
-    Receive a silent director note from Twig (via STT mic on a dedicated mode).
-    Queued for injection into the next /event/stream-invoke call.
-    NOT written to the transcript buffer or ChromaDB.
-
-    Expected body:
-        {"text": "chat is asking about the glider, maybe mention it"}
-    """
-    _auth_check(x_secret)
-    body = await request.json()
-
-    note = body.get("text", "").strip()
-    if not note:
-        return {"status": "dropped"}
-
-    _director_queue.append(note)
-    logger.info("/event/director — queued note (%d total): %r", len(_director_queue), note)
-    return {"status": "queued", "queued_count": len(_director_queue)}
-
-
-@app.post("/event/game-context")
-async def receive_game_context(
-    request: Request,
-    x_secret: str | None = Header(default=None),
-) -> dict:
-    """
-    Update the persistent game state string.
-    New info is LLM-consolidated with existing context so named NPCs, locations,
-    and objectives accumulate across updates rather than being overwritten.
-
-    Expected body:
-        {"text": "just entered the mushroom village, met the owl guide Hoot earlier"}
-    """
-    global _game_context
-
-    _auth_check(x_secret)
-    body = await request.json()
-
-    new_info = body.get("text", "").strip()
-    if not new_info:
-        return {"status": "no-op"}
-
-    if _game_context:
-        consolidation_prompt = (
-            "You are a concise game-state summarizer. "
-            "Merge the new information into the existing summary. "
-            "Preserve named characters, locations, and objectives still relevant. "
-            "Output only the merged summary in 2-3 sentences, no preamble."
-        )
-        user_msg = f"Existing state:\n{_game_context}\n\nNew information:\n{new_info}"
-        merged = await get_completion(consolidation_prompt, user_msg, max_tokens=150)
-        _game_context = merged.strip() if merged else new_info
-    else:
-        _game_context = new_info
-
-    logger.info("/event/game-context — updated: %r", _game_context)
-    return {"status": "updated", "game_context": _game_context}
 
 
 @app.get("/health")
@@ -596,20 +468,21 @@ async def health() -> dict:
 
 
 async def _post_to_streamerbot(
-    message: str, 
-    chat: bool = False, 
-    tts: bool = False, 
-    callback_url: str = STREAMERBOT_CALLBACK_URL, 
-    action_id: str = STREAMERBOT_RESPONSE_ACTION_ID
+    message: str,
+    chat: bool = False,
+    tts: bool = False,
 ) -> None:
     """
-    POST Berries' response back to Streamer.bot.
+    POST Berries' response back to Streamer.bot at the URL/action configured in .env.
     Streamer.bot reads %request.body.message%, %request.body.CHAT%, %request.body.TTS%
     and uses them to decide which actions to trigger.
+
+    The destination URL and action ID are pinned to STREAMERBOT_CALLBACK_URL /
+    STREAMERBOT_RESPONSE_ACTION_ID from config — never taken from request bodies.
     """
     payload = {
         "action": {
-            "id": action_id
+            "id": STREAMERBOT_RESPONSE_ACTION_ID
         },
         "args": {
             "message": message,
@@ -619,11 +492,11 @@ async def _post_to_streamerbot(
     }
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(callback_url, json=payload, timeout=5.0)
+            resp = await client.post(STREAMERBOT_CALLBACK_URL, json=payload, timeout=5.0)
             resp.raise_for_status()
         logger.info("Posted to Streamer.bot: %r (CHAT=%s, TTS=%s)", message, chat, tts)
     except Exception as e:
-        logger.warning("Failed to reach Streamer.bot at %s: %s", callback_url, e)
+        logger.warning("Failed to reach Streamer.bot at %s: %s", STREAMERBOT_CALLBACK_URL, e)
 
 
 @app.post("/event/mention")
@@ -641,10 +514,12 @@ async def receive_mention(
             "username": "the_detective",
             "CHAT": false,
             "TTS": false,
-            "log": true,
-            "callback_url": "http://192.168.1.xxx:7474",  # optional override for where to POST the response (defaults to STREAMERBOT_CALLBACK_URL)
-            "action_id": "20705cb6-be70-4755-8c31-8578cf710be8"  # optional override for which Streamer.bot action to trigger (defaults to hardcoded ID in _post_to_streamerbot)
+            "log": true
         }
+
+    The response is always posted back to STREAMERBOT_CALLBACK_URL using
+    STREAMERBOT_RESPONSE_ACTION_ID from .env — neither can be overridden by the
+    request body (prevents SSRF / response hijack if INGEST_SECRET ever leaks).
 
     Test with:
         Invoke-RestMethod -Uri "http://localhost:8000/event/mention" -Method POST `
@@ -661,8 +536,6 @@ async def receive_mention(
     chat = body.get("CHAT", False)
     tts = body.get("TTS", False)
     # log = body.get("log", True)  # TODO: use to suppress transcript writes
-    callback_url = body.get("callback_url", STREAMERBOT_CALLBACK_URL)
-    action_id = body.get("action_id", STREAMERBOT_RESPONSE_ACTION_ID)
 
     logger.info("/event/mention — username=%r text=%r CHAT=%s TTS=%s", username, text, chat, tts)
 
@@ -676,7 +549,7 @@ async def receive_mention(
         recent_chunks=list(recent_chunks),
         recent_buffer_text="\n".join(e["text"] for e in _buffer[-15:]),
     )
-    await _post_to_streamerbot(response_text, chat=chat, tts=tts, callback_url=callback_url, action_id=action_id)
+    await _post_to_streamerbot(response_text, chat=chat, tts=tts)
 
     return {
         "message": response_text,

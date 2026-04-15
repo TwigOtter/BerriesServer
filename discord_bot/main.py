@@ -6,7 +6,9 @@ Discord bot for Berries' community server.
 Responsibilities:
   - Respond to @mentions anywhere in the server (RAG-backed)
   - Slash commands: /ping, /movie suggest add|remove|list, /movie announce, /movie history list|remove
-  - Webhook server (port 8002) for going-live events forwarded from ingest_api
+  - Webhook server (localhost:8002) for going-live events forwarded from ingest_api.
+    Bound to 127.0.0.1 only — not reachable over the LAN. Authenticated via
+    the shared INGEST_SECRET header, same as ingest_api.
 
 Run with:
     python -m discord_bot.main
@@ -20,12 +22,14 @@ import random
 import uuid
 from datetime import datetime, timezone
 
+import hmac
+
 import discord
 import httpx
 import uvicorn
 from discord import app_commands
 from discord.ext import commands
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 
 from shared.chroma_client import get_collection
 from shared.config import (
@@ -43,6 +47,7 @@ from shared.config import (
     DISCORD_TOKEN,
     DISCORD_WATCH_CHANNEL_IDS,
     GIPHY_API_KEY,
+    INGEST_SECRET,
     LOGS_DIR,
     OMDB_API_KEY,
     TWITCH_CHANNEL,
@@ -1028,9 +1033,25 @@ bot.tree.add_command(movie_group)
 
 # ── Webhook handlers ───────────────────────────────────────────────────────
 
+def _webhook_auth(x_secret: str | None) -> None:
+    """Reject webhook requests that don't carry the shared INGEST_SECRET.
+
+    Uses constant-time comparison. Requires INGEST_SECRET to be set — refuses
+    all requests otherwise so a misconfigured deploy fails closed.
+    """
+    if not INGEST_SECRET:
+        raise HTTPException(status_code=503, detail="Webhook auth not configured")
+    if not hmac.compare_digest(x_secret or "", INGEST_SECRET):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+
 @webhook_app.post("/event/going-live")
-async def going_live(request: Request) -> dict:
+async def going_live(
+    request: Request,
+    x_secret: str | None = Header(default=None),
+) -> dict:
     """Called by ingest_api when Streamer.bot fires a going-live event."""
+    _webhook_auth(x_secret)
     body = await request.json()
     stream_title = body.get("title", "")
     category = body.get("category", "")
@@ -1052,41 +1073,16 @@ async def going_live(request: Request) -> dict:
     return {"status": "ok"}
 
 
-@webhook_app.post("/event/going-live-april-fools")
-async def going_live_april_fools(request: Request) -> dict:
-    """
-    Called manually by Twig when the April Fools stream starts.
-    Posts a handwritten announcement directly to Discord — no LLM call.
-    Include the full message text in the request body; role ping is prepended automatically.
-
-    Expected body:
-        {"message": "your handwritten announcement here", 
-        "gif_url": "optional giphy URL for a specific GIF"}
-    """
-    body = await request.json()
-    message = body.get("message", "").strip()
-    gif_url = body.get("gif_url", "").strip()
-    if not message:
-        log.warning("going-live-april-fools received empty message — skipping")
-        return {"status": "error", "reason": "no message provided"}
-
-    log.info("April Fools going-live event received")
-    role_ping = f"<@&{DISCORD_STREAM_ROLE_ID}>\n" if DISCORD_STREAM_ROLE_ID else ""
-
-    await _post_to_announce(role_ping + message + f"\nhttps://twitch.tv/{TWITCH_CHANNEL}")
-    if gif_url:
-        await _post_to_announce(gif_url)
-    return {"status": "ok"}
-
-
 # ── Entry point ────────────────────────────────────────────────────────────
 
 async def _main() -> None:
     if not DISCORD_TOKEN:
         raise RuntimeError("DISCORD_TOKEN is not set. Check your .env file.")
 
+    # Bind to 127.0.0.1 only — ingest_api runs on the same host and is the sole
+    # caller, so there's no reason to expose this port to the LAN.
     server = uvicorn.Server(
-        uvicorn.Config(webhook_app, host="0.0.0.0", port=DISCORD_BOT_WEBHOOK_PORT, log_level="warning")
+        uvicorn.Config(webhook_app, host="127.0.0.1", port=DISCORD_BOT_WEBHOOK_PORT, log_level="warning")
     )
     async with bot:
         await asyncio.gather(bot.start(DISCORD_TOKEN), server.serve())

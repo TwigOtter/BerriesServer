@@ -10,5 +10,31 @@ Restart=on-failure
 RestartSec=5
 EnvironmentFile=/opt/berries/.env
 
+# ── Sandboxing / hardening ────────────────────────────────────────────────
+# If any of these break the service on your host, remove the offending line
+# and re-run `systemd-analyze security berries-ingest` to check overall score.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/berries/data /opt/berries/logs
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+UMask=0077
+
 [Install]
 WantedBy=multi-user.target

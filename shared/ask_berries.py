@@ -14,7 +14,6 @@ Public API:
     ask_berries_discord_mention()   — full Discord @mention pipeline (ChromaDB + nickname + log)
     ask_berries_movie_announcement()    — movie night announcement + gif query (Twig-directed)
     ask_berries_twitch_going_live()     — going-live announcement + gif query (Twig-directed)
-    ask_berries_streaming()             — April Fools streaming pipeline (game context + director notes + ChromaDB)
 """
 
 import logging
@@ -30,7 +29,6 @@ from shared.prompt_builder import (
     build_system_prompt,
     format_chroma_context,
     format_recent_chunks,
-    format_streaming_context,
 )
 from shared.call_logger import log_llm_call
 
@@ -312,69 +310,6 @@ async def ask_berries_movie_announcement(
     log.debug("ask_berries_movie_announcement — gif_query: %r", gif_query)
 
     return announcement, gif_query
-
-
-async def ask_berries_streaming(
-    recent_chunks: list[dict],
-    recent_buffer_text: str,
-    game_context: str = "",
-    director_notes: list[str] | None = None,
-) -> str | None:
-    """
-    April Fools streaming pipeline.
-
-    Berries is "playing" Smushi Come Home on TwigOtter's Twitch channel while Twig
-    secretly plays behind the scenes. Assembles game state, director notes, ChromaDB
-    context, and recent chat into a streaming commentary response.
-
-    Args:
-        recent_chunks:      Deque of recently flushed chunks for short-term memory context.
-        recent_buffer_text: Last N in-progress buffer entries for recency and query rewriting.
-        game_context:       Current consolidated game state string (updated by Twig via endpoint).
-        director_notes:     One-shot guidance from Twig, consumed and cleared after each invoke.
-    """
-
-    # Add director_notes to recent_buffer_text for query rewriting and ChromaDB retrieval, so that the LLM can use them to inform what past context is relevant. They will also be included in the system prompt via format_streaming_context.
-    augmented_recent_buffer_text = recent_buffer_text
-    if director_notes:
-        notes_text = "[IMPORTANT DIRECTOR NOTES]:\n" + "\n".join(director_notes)
-        augmented_recent_buffer_text = f"{recent_buffer_text}\n{notes_text}" if recent_buffer_text else notes_text
-  
-    docs, search_queries = await _chroma_context(
-        query="Please prioritize queries based on director notes and recent chat activity in the Twitch stream, so they can help inform Berries' commentary.",
-        recent_context=augmented_recent_buffer_text,
-        username="Twig",
-    )
-
-    context_parts: list[str] = []
-    if docs:
-        context_parts.append(format_chroma_context(docs))
-    if recent_chunks:
-        context_parts.append(format_recent_chunks([c["text"] for c in recent_chunks]))
-
-    streaming_section = format_streaming_context(game_context, director_notes or [])
-    if streaming_section:
-        context_parts.append(streaming_section)
-
-    system_prompt = build_system_prompt(
-        _load_personality(),
-        ContextType.TWITCH_STREAMING,
-        "\n\n".join(context_parts),
-    )
-    user_message = f"{recent_buffer_text}\n\nContinue your stream." if recent_buffer_text else "Continue your stream."
-
-    response = await ask_berries(system_prompt=system_prompt, user_message=user_message, max_tokens=80)
-
-    log_llm_call(
-        service="twitch_streaming",
-        username="",
-        raw_message="[stream invoke]",
-        rewrite_queries=search_queries,
-        system_prompt=system_prompt,
-        user_message=user_message,
-        response=response,
-    )
-    return response
 
 
 async def ask_berries_twitch_going_live(
