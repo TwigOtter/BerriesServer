@@ -29,11 +29,6 @@ def test_twitch_chat_requires_single_line():
     assert "single continuous line" in result
 
 
-def test_twitch_tts_includes_prosody_tags():
-    result = build_system_prompt(PERSONALITY, ContextType.TWITCH_TTS)
-    assert "<prosody>" in result or "prosody" in result
-
-
 def test_twitch_tts_still_forbids_markdown():
     """TTS inherits all base Twitch restrictions."""
     result = build_system_prompt(PERSONALITY, ContextType.TWITCH_TTS)

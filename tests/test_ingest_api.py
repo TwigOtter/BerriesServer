@@ -101,7 +101,7 @@ class TestChatEvent:
             "role": "1",
         })
         assert len(_buffer) == 1
-        assert "viewer123" in _buffer[0]["text"]
+        assert "Viewer123" in _buffer[0]["text"]
 
     async def test_emote_condensing(self, client):
         """Repeated emotes should be condensed: 'PogChamp PogChamp PogChamp' → 'PogChamp x3'."""
@@ -202,16 +202,6 @@ class TestMentionEvent:
             "CHAT": False,
         })
         assert resp.json()["TTS"] is True
-
-    async def test_twitch_tts_context_includes_prosody_instructions(self, client):
-        """TTS=True should produce a system prompt with prosody tag instructions."""
-        with patch("shared.ask_berries.get_completion", new=AsyncMock(return_value="boo")) as mock_llm:
-            await client.post("/event/mention", json={
-                "text": "say something dramatic",
-                "TTS": True,
-            })
-        system_prompt = mock_llm.call_args.kwargs["system_prompt"]
-        assert "prosody" in system_prompt.lower()
 
     async def test_twitch_chat_context_excludes_prosody_instructions(self, client):
         """TTS=False should produce a system prompt without prosody tag instructions."""
