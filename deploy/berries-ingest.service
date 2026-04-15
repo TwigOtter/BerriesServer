@@ -33,7 +33,10 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @resources
+# NOTE: The previous deny list (`~@privileged @resources`) killed the service
+# with SIGSYS because PyTorch/sentence-transformers (pulled in by ChromaDB)
+# call syscalls in @resources during init. The @system-service allowlist alone
+# is already a reasonable tightening; the deny list is omitted deliberately.
 UMask=0077
 
 [Install]
