@@ -12,7 +12,7 @@ Usage:
 """
 
 import chromadb
-from shared.config import CHROMADB_DIR, CHROMA_COLLECTION, DATA_DIR, CHROMA_N_RESULTS, CHROMA_L2_THRESHOLD
+from shared.config import CHROMADB_DIR, CHROMA_COLLECTION, DATA_DIR, CHROMA_N_RESULTS, CHROMA_COSINE_THRESHOLD
 
 _client: chromadb.ClientAPI | None = None
 _collection = None
@@ -62,6 +62,7 @@ def get_collection():
         _collection = client.get_or_create_collection(
             name=CHROMA_COLLECTION,
             embedding_function=ef,
+            metadata={"hnsw:space": "cosine"},
         )
     return _collection
 
@@ -99,18 +100,18 @@ def query_chroma_multi(queries: list[str], n_results: int = CHROMA_N_RESULTS) ->
     #         [{"stream_date": "2025-11-14", ...}, ...],  # metadata for query 2 results
     #     ],
     #     "distances": [
-    #         [0.42, 0.71, 1.05],  # L2 distances for query 1 (lower = more similar)
-    #         [0.38, 0.79, 0.91],  # L2 distances for query 2
+    #         [0.15, 0.28, 0.41],  # cosine distances for query 1 (lower = more similar, range 0–1)
+    #         [0.12, 0.31, 0.38],  # cosine distances for query 2
     #     ]
     # }
 
     # Build per-query ranked lists of (chunk_id, doc, metadata) triples,
-    # filtering out any chunk whose L2 distance exceeds the threshold.
+    # filtering out any chunk whose cosine distance exceeds the threshold.
     per_query: list[list[tuple[str, str, dict]]] = [
         [
             (chunk_id, doc, meta)
             for chunk_id, doc, meta, dist in zip(id_list, doc_list, meta_list, dist_list)
-            if dist <= CHROMA_L2_THRESHOLD
+            if dist <= CHROMA_COSINE_THRESHOLD
         ]
         for id_list, doc_list, meta_list, dist_list in zip(
             results.get("ids", []),

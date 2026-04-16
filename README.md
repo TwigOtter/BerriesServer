@@ -81,7 +81,7 @@ All LLM calls go through here. Never called directly from non-service code.
 
 **Per-response context assembly (mention pipelines):**
 1. Load `berries_bot/personality.txt` as system prompt base
-2. Rewrite query → query ChromaDB for `CHROMA_N_RESULTS` semantically similar past chunks; discard any with L2 distance > `CHROMA_L2_THRESHOLD`
+2. Rewrite query → query ChromaDB for `CHROMA_N_RESULTS` semantically similar past chunks; discard any with cosine distance > `CHROMA_COSINE_THRESHOLD`
 3. Inject last 2 flushed chunks from `recent_chunks` deque (Twitch short-term memory)
 4. Call LLM → return response to service for delivery
 
@@ -211,7 +211,7 @@ Copy `.env.example` to `.env`. Key variables:
 | `CHUNK_OVERLAP_SEC` | `30` | Seconds of Twitch messages to carry over after a flush |
 | `DISCORD_CHUNK_OVERLAP_MESSAGES` | `5` | Discord messages to carry over after a flush |
 | `CHROMA_N_RESULTS` | `4` | ChromaDB results per query |
-| `CHROMA_L2_THRESHOLD` | `0.8` | Discard ChromaDB results with L2 distance above this |
+| `CHROMA_COSINE_THRESHOLD` | `0.32` | Discard ChromaDB results with cosine distance above this |
 | `EMBEDDING_MODEL` | `nomic-ai/nomic-embed-text-v1` | Local sentence-transformers model |
 
 ---

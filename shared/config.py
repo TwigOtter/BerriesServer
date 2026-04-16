@@ -32,7 +32,7 @@ CHUNK_OVERLAP_SEC = int(os.getenv("CHUNK_OVERLAP_SEC", "30"))    # keep last 30s
 # ── ChromaDB ───────────────────────────────────────────────────────────────
 CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "stream_transcripts")
 CHROMA_N_RESULTS = int(os.getenv("CHROMA_N_RESULTS", "4"))       # chunks to retrieve per query
-CHROMA_L2_THRESHOLD = float(os.getenv("CHROMA_L2_THRESHOLD", "0.8"))  # discard chunks with L2 distance above this
+CHROMA_COSINE_THRESHOLD = float(os.getenv("CHROMA_COSINE_THRESHOLD", "0.32"))  # discard chunks with cosine distance above this (0.32 ≈ cosine similarity < 0.68)
 
 # ── Embedding model ────────────────────────────────────────────────────────
 # Uses sentence-transformers locally — no data leaves the box.
