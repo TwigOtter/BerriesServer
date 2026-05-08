@@ -5,7 +5,6 @@ If an item from this file is completed, it should be removed from the document.
 
 ## TODO Items
 
-- Set Pronouns method
 - Consolidate user profile upserts to a single shared file so that both Twitch and Discord can share methods to set user attributes like nickname pronouns, time zones, region, birthdays, and more.
 - Ensure records are merged when linking Twitch and Discord.
 - The OMDB movie lookup by string is a bit imprecise and sometimes people remove the wrong movie or Twig risks announcing the wrong movie for movie night.

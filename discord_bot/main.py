@@ -71,7 +71,21 @@ from shared.movie_db import (
     remove_watched,
     toggle_vote,
 )
-from shared.user_db import init_db as init_user_db, link_discord, get_twitch_link, get_discord_for_twitch, set_nickname, set_nickname_for_discord, upsert_discord_user
+from shared.user_db import (
+    init_db as init_user_db,
+    link_discord,
+    get_twitch_link,
+    get_discord_for_twitch,
+    set_nickname,
+    set_nickname_for_discord,
+    upsert_discord_user,
+    set_pronouns,
+    set_species,
+    set_birthday,
+    set_timezone,
+    get_user,
+    get_user_by_discord,
+)
 
 # ── Logging ────────────────────────────────────────────────────────────────
 
@@ -820,6 +834,166 @@ async def set_nickname_cmd(interaction: discord.Interaction, nickname: str) -> N
             )
         except Exception as e:
             log.warning("Failed to send to log channel %s: %s", DISCORD_LOG_CHANNEL_ID, e)
+
+
+@bot.tree.command(name="about-me", description="See what Berries knows about you")
+async def about_me_cmd(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+
+    discord_id = str(interaction.user.id)
+    t_login = get_twitch_link(discord_id)
+    user = get_user(t_login) if t_login else get_user_by_discord(discord_id)
+
+    if not user:
+        await interaction.followup.send(
+            "*peers into the shadows* ...I don't have a profile for you yet. "
+            "Try `/twitch-link` to connect your Twitch account, or use any of the `/set-*` commands to get started.",
+            ephemeral=True,
+        )
+        return
+
+    name = user.get("nickname") or user.get("t_login") or user.get("d_username") or interaction.user.display_name
+
+    lines = ["**USER PROFILE**"]
+    lines.append(f"**Name:** {name}")
+    lines.append(f"**Pronouns:** {user['pronouns'] if user.get('pronouns') else '*not set — use `/set-pronouns`*'}")
+    lines.append(f"**Species:** {user['species'] if user.get('species') else '*not set — use `/set-species`*'}")
+
+    tz = user.get("timezone")
+    if tz:
+        try:
+            from zoneinfo import ZoneInfo
+            local_time = datetime.now(ZoneInfo(tz)).strftime("%A %H:%M %Z")
+            lines.append(f"**Local time:** {local_time} *(timezone: {tz})*")
+        except Exception:
+            lines.append(f"**Timezone:** {tz} *(invalid — use `/set-timezone` to fix)*")
+    else:
+        lines.append("**Timezone:** *not set — use `/set-timezone`*")
+
+    if user.get("birthday"):
+        lines.append(f"**Birthday:** {user['birthday']}")
+    else:
+        lines.append("**Birthday:** *not set — use `/set-birthday`*")
+
+    if user.get("about"):
+        lines.append(f"**About:** {user['about']}")
+    else:
+        lines.append("**About:** *nothing yet — Berries will fill this in when he dreams after your first conversation :3*")
+
+    if t_login:
+        lines.append(f"\n*Twitch: `{t_login}`*")
+
+    await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+
+@bot.tree.command(name="set-pronouns", description="Set the pronouns Berries uses for you")
+@app_commands.describe(pronouns="Your pronouns (e.g. she/her, he/him, they/them)")
+async def set_pronouns_cmd(interaction: discord.Interaction, pronouns: str) -> None:
+    await interaction.response.defer(ephemeral=True)
+
+    discord_id = str(interaction.user.id)
+    pronouns = pronouns.strip()
+    if not pronouns:
+        await interaction.followup.send(
+            "*blinks* ...you have to actually give me something to go on.",
+            ephemeral=True,
+        )
+        return
+    if len(pronouns) > 32:
+        await interaction.followup.send(
+            "*squints* ...that's a lot of pronouns. Keep it under 32 characters.",
+            ephemeral=True,
+        )
+        return
+
+    upsert_discord_user(discord_id, d_username=interaction.user.name)
+    set_pronouns(discord_id, pronouns)
+
+    log.info("Pronouns set: Discord user %s (%s) → %r", interaction.user, discord_id, pronouns)
+    await interaction.followup.send(
+        f"*nods* ...noted. I'll use **{pronouns}** for you.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="set-species", description="Set your primary fursona species")
+@app_commands.describe(species="Your fursona species (e.g. red fox, border collie)")
+async def set_species_cmd(interaction: discord.Interaction, species: str) -> None:
+    await interaction.response.defer(ephemeral=True)
+
+    discord_id = str(interaction.user.id)
+    species = species.strip()
+    if not species:
+        await interaction.followup.send(
+            "*blinks* ...you have to actually tell me what you are.",
+            ephemeral=True,
+        )
+        return
+    if len(species) > 64:
+        await interaction.followup.send(
+            "*squints* ...that's a mouthful. Keep it under 64 characters.",
+            ephemeral=True,
+        )
+        return
+
+    upsert_discord_user(discord_id, d_username=interaction.user.name)
+    set_species(discord_id, species)
+
+    log.info("Species set: Discord user %s (%s) → %r", interaction.user, discord_id, species)
+    await interaction.followup.send(
+        f"*tilts head* ...noted. I'll remember that you're a **{species}**.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="set-birthday", description="Set your birthday (month and day, no year stored)")
+@app_commands.describe(month="Birth month (1–12)", day="Birth day (1–31)")
+async def set_birthday_cmd(
+    interaction: discord.Interaction,
+    month: app_commands.Range[int, 1, 12],
+    day: app_commands.Range[int, 1, 31],
+) -> None:
+    await interaction.response.defer(ephemeral=True)
+
+    discord_id = str(interaction.user.id)
+    birthday = f"{month:02d}-{day:02d}"
+
+    upsert_discord_user(discord_id, d_username=interaction.user.name)
+    set_birthday(discord_id, birthday)
+
+    log.info("Birthday set: Discord user %s (%s) → %s", interaction.user, discord_id, birthday)
+    await interaction.followup.send(
+        f"*rustles quietly* ...I'll remember **{birthday}**. No year, just the day — as it should be.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="set-timezone", description="Set your timezone so Berries knows what time it is for you")
+@app_commands.describe(timezone="IANA timezone name (e.g. America/New_York, Europe/London, Asia/Tokyo)")
+async def set_timezone_cmd(interaction: discord.Interaction, timezone: str) -> None:
+    await interaction.response.defer(ephemeral=True)
+
+    timezone = timezone.strip()
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo(timezone)
+    except Exception:
+        await interaction.followup.send(
+            f"*narrows eyes* ...I don't recognize **{timezone}** as a valid timezone. "
+            "Use an IANA name like `America/New_York`, `Europe/London`, or `Asia/Tokyo`.",
+            ephemeral=True,
+        )
+        return
+
+    discord_id = str(interaction.user.id)
+    upsert_discord_user(discord_id, d_username=interaction.user.name)
+    set_timezone(discord_id, timezone)
+
+    log.info("Timezone set: Discord user %s (%s) → %r", interaction.user, discord_id, timezone)
+    await interaction.followup.send(
+        f"*nods slowly* ...noted. Your timezone is set to **{timezone}**.",
+        ephemeral=True,
+    )
 
 
 # ── /movie subcommand group ─────────────────────────────────────────────────

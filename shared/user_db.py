@@ -31,6 +31,7 @@ Schema
   timezone              TEXT          IANA format, e.g. "America/New_York".
   birthday              TEXT          MM-DD only, no year.
   country               TEXT
+  about                 TEXT          Short blurb written/updated by Berries during dreaming.
   notes                 TEXT          JSON blob for Berries' ad-hoc observations.
   first_seen            TEXT          ISO timestamp — when record was created.
   last_seen             TEXT          ISO timestamp — most recent activity.
@@ -72,6 +73,7 @@ _CREATE_TABLE = """
         timezone              TEXT,
         birthday              TEXT,
         country               TEXT,
+        about                 TEXT,
         notes                 TEXT NOT NULL DEFAULT '{}',
         first_seen            TEXT NOT NULL,
         last_seen             TEXT NOT NULL,
@@ -82,9 +84,10 @@ _CREATE_TABLE = """
 
 def _maybe_migrate(conn: sqlite3.Connection) -> None:
     """
-    If the users table exists with the old NOT NULL t_login constraint, migrate
-    it to the new schema (nullable t_login, CHECK that t_login or d_id is set).
-    Uses the standard SQLite rename-recreate-copy pattern.
+    Apply incremental schema migrations to the users table.
+
+    1. If t_login has NOT NULL constraint: full table rebuild to relax it.
+    2. If `about` column is missing: add it via ALTER TABLE.
     """
     tables = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='users'"
@@ -97,6 +100,9 @@ def _maybe_migrate(conn: sqlite3.Connection) -> None:
         conn.execute(_CREATE_TABLE)
         conn.execute("INSERT INTO users SELECT * FROM users_old")
         conn.execute("DROP TABLE users_old")
+        col_info = {row["name"]: row for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "about" not in col_info:
+        conn.execute("ALTER TABLE users ADD COLUMN about TEXT")
 
 
 def init_db() -> None:
@@ -514,3 +520,74 @@ def get_discord_for_twitch(t_login: str) -> str | None:
             "SELECT d_id FROM users WHERE t_login = ?", (t_login,)
         ).fetchone()
     return row["d_id"] if row else None
+
+
+def set_pronouns(d_id: str, pronouns: str) -> None:
+    """Set or update a user's pronouns looked up by Discord ID."""
+    with _connect() as conn:
+        conn.execute("UPDATE users SET pronouns = ? WHERE d_id = ?", (pronouns, d_id))
+        conn.commit()
+
+
+def set_species(d_id: str, species: str) -> None:
+    """Set or update a user's fursona species looked up by Discord ID."""
+    with _connect() as conn:
+        conn.execute("UPDATE users SET species = ? WHERE d_id = ?", (species, d_id))
+        conn.commit()
+
+
+def set_birthday(d_id: str, birthday: str) -> None:
+    """Set or update a user's birthday (MM-DD) looked up by Discord ID."""
+    with _connect() as conn:
+        conn.execute("UPDATE users SET birthday = ? WHERE d_id = ?", (birthday, d_id))
+        conn.commit()
+
+
+def set_timezone(d_id: str, timezone: str) -> None:
+    """Set or update a user's IANA timezone looked up by Discord ID."""
+    with _connect() as conn:
+        conn.execute("UPDATE users SET timezone = ? WHERE d_id = ?", (timezone, d_id))
+        conn.commit()
+
+
+def set_about(*, t_login: str | None = None, d_id: str | None = None, about: str) -> None:
+    """
+    Set or update the dreaming-generated about blurb.
+    Exactly one of t_login or d_id must be provided.
+    """
+    with _connect() as conn:
+        if t_login:
+            conn.execute("UPDATE users SET about = ? WHERE t_login = ?", (about, t_login))
+        elif d_id:
+            conn.execute("UPDATE users SET about = ? WHERE d_id = ?", (about, d_id))
+        conn.commit()
+
+
+def get_all_users() -> list[dict]:
+    """Return all user rows as dicts. Used by the dreaming script."""
+    with _connect() as conn:
+        rows = conn.execute("SELECT * FROM users").fetchall()
+    result = []
+    for row in rows:
+        r = dict(row)
+        r["notes"] = json.loads(r["notes"])
+        r["t_past_logins"] = json.loads(r["t_past_logins"])
+        r["d_past_usernames"] = json.loads(r["d_past_usernames"])
+        result.append(r)
+    return result
+
+
+def get_birthday_users(month_day: str) -> list[dict]:
+    """Return all users whose birthday matches the given MM-DD string."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM users WHERE birthday = ?", (month_day,)
+        ).fetchall()
+    result = []
+    for row in rows:
+        r = dict(row)
+        r["notes"] = json.loads(r["notes"])
+        r["t_past_logins"] = json.loads(r["t_past_logins"])
+        r["d_past_usernames"] = json.loads(r["d_past_usernames"])
+        result.append(r)
+    return result

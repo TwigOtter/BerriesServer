@@ -23,11 +23,12 @@ async def rewrite_queries(
     message: str,
     recent_context: str,
     username: str = "a viewer",
-) -> list[str] | None:
+) -> list[str]:
     """
-    Rewrite `message` into 2-3 focused ChromaDB search queries using the configured LLM backend.
-    Returns None if the model says SKIP (no retrieval needed).
-    Falls back to [message] on any error.
+    Rewrite `message` into 2-3 focused ChromaDB search queries.
+    Always returns a non-empty list — the original message is always included
+    so Berries can recall even users who send simple greetings.
+    Falls back to [original] on any error.
     """
     prompt = (
         f"Given this recent chat context:\n{recent_context}\n\n"
@@ -35,22 +36,24 @@ async def rewrite_queries(
         "Generate 2-3 distinct search queries (one per line, no labels or punctuation) "
         "that capture what information about the user and their query would be "
         "most useful to retrieve in order to respond well to this message. "
-        "If the message needs no factual retrieval (e.g. pure banter, greetings), "
-        "return only the word: SKIP"
+        "For short greetings or banter, generate queries about the user by name rather than skipping."
     )
     system = "You generate ChromaDB search queries. Follow the instructions exactly."
 
+    original = f"{username} {message}".strip()
     try:
         raw = await get_completion(system_prompt=system, user_message=prompt, max_tokens=128, model=ANTHROPIC_ASSIST_MODEL)
-        raw = raw.strip()
-        if raw.upper() == "SKIP":
-            return None
-        queries = [q.strip() for q in raw.splitlines() if q.strip()]
+        queries = [q.strip() for q in raw.strip().splitlines() if q.strip()]
         _log.debug("rewrite_queries got parsed queries: %r", queries)
-        return queries if queries else [message]
+        if not queries:
+            return [original]
+        # Always include the raw "username message" as a final fallback query
+        if original not in queries:
+            queries.append(original)
+        return queries
     except Exception as e:
         _log.warning("rewrite_queries failed, falling back to raw message: %s", e)
-        return [message]
+        return [original]
 
 
 async def get_completion(

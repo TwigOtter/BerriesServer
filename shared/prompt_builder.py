@@ -95,6 +95,41 @@ def format_channel_history(lines: list[str]) -> str:
     )
 
 
+def format_user_context(user: dict, fallback_name: str) -> str:
+    """
+    Format a user profile row into a USER PROFILE block for the system prompt.
+    Only includes fields that are actually set; returns empty string if nothing useful.
+    """
+    lines: list[str] = []
+
+    name = user.get("nickname") or fallback_name
+    lines.append(f"Name: {name}")
+
+    if user.get("species"):
+        lines.append(f"Species: {user['species']}")
+
+    if user.get("pronouns"):
+        lines.append(f"Pronouns: {user['pronouns']}")
+
+    tz = user.get("timezone")
+    if tz:
+        try:
+            from zoneinfo import ZoneInfo
+            from datetime import datetime
+            local_time = datetime.now(ZoneInfo(tz)).strftime("%A %H:%M %Z")
+            lines.append(f"Local time: {local_time}")
+        except Exception:
+            pass
+
+    if user.get("about"):
+        lines.append(f"About: {user['about']}")
+
+    # Only emit the block if we have more than just the name
+    if len(lines) <= 1:
+        return ""
+    return "USER PROFILE:\n" + "\n".join(lines)
+
+
 def build_system_prompt(
     personality: str,
     context_type: ContextType,

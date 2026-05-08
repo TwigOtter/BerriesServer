@@ -29,8 +29,9 @@ from shared.prompt_builder import (
     build_system_prompt,
     format_chroma_context,
     format_recent_chunks,
+    format_user_context,
 )
-from shared.call_logger import log_llm_call
+from shared.interaction_log import log_interaction
 
 log = logging.getLogger(__name__)
 
@@ -70,17 +71,15 @@ async def _chroma_context(
     query: str,
     recent_context: str,
     username: str,
-) -> tuple[list[tuple[str, dict]], list[str] | None]:
+) -> tuple[list[tuple[str, dict]], list[str]]:
     """
     Run query rewriting + ChromaDB retrieval.
-    Returns (docs, queries_used). docs is empty on SKIP or failure.
-    queries_used is None when the rewriter returned SKIP.
+    Returns (docs, queries_used). docs is empty on failure.
+    rewrite_queries always returns a non-empty list now, so docs is never empty
+    for pure retrieval reasons — only for no-match results from ChromaDB.
     """
     try:
         search_queries = await rewrite_queries(query, recent_context, username)
-        if search_queries is None:  # rewriter returned SKIP
-            log.debug("rewrite_queries returned SKIP for query: %.80r", query)
-            return [], None
         docs = query_chroma_multi(search_queries)
         log.debug("ChromaDB returned %d doc(s) for %d rewritten query/queries", len(docs), len(search_queries))
         return docs, search_queries
@@ -170,6 +169,15 @@ async def ask_berries_twitch(
     if docs:
         context_parts.append(format_chroma_context(docs))
 
+    # User profile: nickname, species, local time, about blurb
+    if username:
+        from shared.user_db import get_user
+        user_profile = get_user(username)
+        if user_profile:
+            user_ctx = format_user_context(user_profile, username)
+            if user_ctx:
+                context_parts.append(user_ctx)
+
     # Short-term memory: last N flushed chunks from this session
     if recent_chunks:
         context_parts.append(format_recent_chunks([c["text"] for c in recent_chunks]))
@@ -181,15 +189,13 @@ async def ask_berries_twitch(
     )
     response = await ask_berries(system_prompt=system_prompt, user_message=user_message, max_tokens=80)
 
-    log_llm_call(
-        service="twitch",
-        username=username or "",
-        raw_message=query,
-        rewrite_queries=search_queries,
-        system_prompt=system_prompt,
-        user_message=user_message,
-        response=response,
-    )
+    if username and response:
+        log_interaction(
+            user_key=username,
+            nickname=nickname or username,
+            user_message=query,
+            berries_response=response,
+        )
     return response
 
 
@@ -224,13 +230,19 @@ async def ask_berries_discord_mention(
 
     # Long-term memory via ChromaDB (use channel_history as recent_context for query rewriting)
     docs, search_queries = await _chroma_context(
-        query,
+        user_message,
         recent_context=channel_history,
         username=display_name,
     )
     chroma_block = format_chroma_context(docs) if docs else ""
 
-    system_suffix = "\n\n".join(filter(None, [chroma_block, channel_history]))
+    # User profile: nickname, species, local time, about blurb
+    from shared.user_db import get_user_by_discord, get_twitch_link, get_user
+    _t_login = get_twitch_link(discord_id)
+    _db_user = get_user(_t_login) if _t_login else get_user_by_discord(discord_id)
+    user_profile_block = format_user_context(_db_user, display_name) if _db_user else ""
+
+    system_suffix = "\n\n".join(filter(None, [chroma_block, user_profile_block, channel_history]))
     system_prompt = build_system_prompt(_load_personality(), ContextType.DISCORD_MENTION, system_suffix)
 
     log.debug("ask_berries_discord_mention — user_message: %.120r", user_message)
@@ -238,15 +250,14 @@ async def ask_berries_discord_mention(
     response = cleanup_response(response) if response else response
     log.debug("ask_berries_discord_mention — response: %.120r", response)
 
-    log_llm_call(
-        service="discord",
-        username=display_name,
-        raw_message=query,
-        rewrite_queries=search_queries,
-        system_prompt=(f"[personality.txt]\n[ContextType.DISCORD_MENTION]\n{system_suffix}"),
-        user_message=user_message,
-        response=response,
-    )
+    if response:
+        user_key = get_twitch_link(discord_id) or discord_id
+        log_interaction(
+            user_key=user_key,
+            nickname=nickname,
+            user_message=query,
+            berries_response=response,
+        )
     return response
 
 
