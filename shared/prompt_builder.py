@@ -50,6 +50,9 @@ RESPONSE INSTRUCTIONS:
 def _chunk_header(meta: dict) -> str:
     """Return a source label for a ChromaDB chunk based on its metadata."""
     source = meta.get("source", "twitch")
+    if source == "summary":
+        generated_at = meta.get("generated_at", "")
+        return f"[Summary: {generated_at}]" if generated_at else "[Summary]"
     if source == "discord":
         channel = meta.get("channel_name", "")
         start = (meta.get("start_time") or "")[:10]  # YYYY-MM-DD

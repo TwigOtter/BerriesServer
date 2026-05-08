@@ -66,6 +66,12 @@ def get_collection():
     return _collection
 
 
+def upsert_summary(chunk_id: str, text: str, metadata: dict) -> None:
+    """Write or overwrite a source:summary entry in ChromaDB."""
+    collection = get_collection()
+    collection.upsert(ids=[chunk_id], documents=[text], metadatas=[metadata])
+
+
 def query_chroma_multi(queries: list[str], n_results: int = CHROMA_N_RESULTS) -> list[tuple[str, dict]]:
     """
     Run all queries against ChromaDB in one call, deduplicate by chunk ID,

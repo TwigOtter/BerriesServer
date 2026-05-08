@@ -15,11 +15,17 @@ Phases:
      - Generates a personalized birthday message from Berries for each
      - Posts to the Berries chat channel (so users can respond, not put on a pedestal)
 
-Designed as discrete phases so future phases (RAG summarization, stale summary
-regeneration, etc.) slot in cleanly.
+  3. RAG summarization
+     - Reads today's retrieval log (logs/daily_interactions/YYYY-MM-DD_retrievals.json)
+     - For each (query → chunks) entry, distills factual content via LLM
+     - Writes distilled summaries back to ChromaDB as source:summary entries
+     - Archives the processed retrieval log
+
+Designed as discrete phases so future work (stale summary regeneration, etc.) slots in cleanly.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import shutil
@@ -267,6 +273,93 @@ async def phase_birthdays(today: datetime) -> int:
     return greeted
 
 
+# ── Phase 3: RAG summarization ────────────────────────────────────────────────
+
+async def phase_rag_summarization(date_str: str) -> int:
+    """
+    Distill each (query → chunks) entry from today's retrieval log into a clean
+    factual summary and write it to ChromaDB as source:summary.
+    Returns the count of summaries written.
+    """
+    log.info("Phase 3: RAG summarization for %s", date_str)
+
+    path = _INTERACTIONS_DIR / f"{date_str}_retrievals.json"
+    if not path.exists():
+        log.info("No retrieval log found for %s — skipping", date_str)
+        return 0
+
+    try:
+        data: dict[str, list[str]] = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        log.exception("Failed to read retrieval log at %s", path)
+        return 0
+
+    from shared.chroma_client import upsert_summary
+
+    system = (
+        "You distill factual information from conversational logs for a Twitch streamer's AI mascot. "
+        "Be concise and factual. Output only the distilled facts — no preamble, no commentary."
+    )
+    created = 0
+
+    for query, chunks in data.items():
+        if not chunks:
+            continue
+
+        passages = "\n---\n".join(chunks)
+        prompt = (
+            f"Given this search query: \"{query}\"\n\n"
+            f"Extract only factual information from these passages that would help answer it — "
+            f"facts about users, channel events, running jokes, past interactions. "
+            f"Do not include response style, tone, or how Berries previously phrased things. "
+            f"If there is nothing factual worth keeping, reply with only: SKIP\n\n"
+            f"Passages:\n{passages}"
+        )
+
+        try:
+            summary = await get_completion(
+                system_prompt=system,
+                user_message=prompt,
+                max_tokens=256,
+                model=ANTHROPIC_ASSIST_MODEL,
+            )
+        except Exception:
+            log.exception("Distillation failed for query %r", query[:60])
+            continue
+
+        if not summary:
+            continue
+        summary = summary.strip()
+        if summary.upper() == "SKIP" or not summary:
+            log.debug("No facts extracted for query %r — skipping", query[:60])
+            continue
+
+        chunk_id = f"summary_{hashlib.sha256(query.encode()).hexdigest()[:16]}_{date_str}"
+        try:
+            upsert_summary(
+                chunk_id=chunk_id,
+                text=summary,
+                metadata={
+                    "source": "summary",
+                    "generated_at": date_str,
+                    "stale": False,
+                    "origin_query": query[:200],
+                },
+            )
+            log.info("Written summary %s for query %r", chunk_id, query[:60])
+            created += 1
+        except Exception:
+            log.exception("Failed to write summary to ChromaDB for query %r", query[:60])
+
+    # Archive the retrieval log
+    _ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    dest = _ARCHIVE_DIR / path.name
+    shutil.move(str(path), str(dest))
+    log.info("Archived retrieval log to %s", dest)
+
+    return created
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 async def main() -> None:
@@ -281,6 +374,9 @@ async def main() -> None:
 
     birthday_count = await phase_birthdays(now)
     log.info("Phase 2 complete: %d birthday message(s) posted", birthday_count)
+
+    rag_count = await phase_rag_summarization(date_str)
+    log.info("Phase 3 complete: %d summary/summaries written to ChromaDB", rag_count)
 
     log.info("Dreaming complete.")
 
