@@ -224,7 +224,7 @@ async def ask_berries_discord_mention(
 
     # Long-term memory via ChromaDB (use channel_history as recent_context for query rewriting)
     docs, search_queries = await _chroma_context(
-        user_message,
+        query,
         recent_context=channel_history,
         username=display_name,
     )
