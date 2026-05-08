@@ -220,13 +220,7 @@ async def ask_berries_discord_mention(
         created_at:      Message timestamp; formatted into the user_message for Berries.
     """
     nickname = _get_nickname_discord(discord_id, display_name)
-    nickname_str = f" (nickname: {nickname})" if nickname != display_name else ""
-    date_str = (
-        created_at.replace(tzinfo=timezone.utc)
-        .astimezone(ZoneInfo("America/Chicago"))
-        .strftime("%A, %Y-%m-%d %H:%M:%S")
-    )
-    user_message = f"(datetime: {date_str} [US Central Time]) {display_name}{nickname_str} said: {query}"
+    user_message = f"{nickname} said: {query}"
 
     # Long-term memory via ChromaDB (use channel_history as recent_context for query rewriting)
     docs, search_queries = await _chroma_context(
