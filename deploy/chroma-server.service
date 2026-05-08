@@ -1,18 +1,19 @@
 [Unit]
-Description=Berries nightly dreaming phase
+Description=Berries ChromaDB Server (single-writer process for the chroma.sqlite3 store)
 After=network.target
 
 [Service]
-Type=oneshot
 User=berries
 WorkingDirectory=/opt/berries
-ExecStart=/opt/berries/venv/bin/python scripts/dream.py
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=berries-dream
+ExecStart=/opt/berries/venv/bin/chroma run --path /opt/berries/data/chromadb --host 127.0.0.1 --port 8001
+Restart=on-failure
+RestartSec=5
 EnvironmentFile=/opt/berries/.env
 
 # ── Sandboxing / hardening ────────────────────────────────────────────────
+# Mirrors berries-ingest/discord. If any of these break the service on your
+# host, remove the offending line and re-run
+# `systemd-analyze security chroma-server` to check overall score.
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -33,9 +34,9 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-# NOTE: deny list (~@privileged @resources) omitted — PyTorch/sentence-transformers
-# call syscalls in @resources during init. Matches berries-ingest/discord approach.
+# NOTE: deny list (`~@privileged @resources`) omitted — see berries-ingest
+# for context (PyTorch/sentence-transformers needs syscalls in @resources).
 UMask=0077
 
 [Install]
-WantedBy=timers.target
+WantedBy=multi-user.target

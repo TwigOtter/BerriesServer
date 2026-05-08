@@ -19,6 +19,7 @@ If an item from this file is completed, it should be removed from the document.
 - **`/temp <value> <unit> to <unit>`** — convert between F, C, and K; pure math, no external deps.
 - Standardize logging across the whole system
 - Add performance monitoring to LLM calls (how long do things take?)
+- `shared/llm_client.py::_anthropic_completion` creates a fresh `AsyncAnthropic` client per call (inside `async with`). That fixes the connection-leak the original code had, but loses httpx connection-pool reuse across calls — fine for low-volume use, wasteful for long-running services. Replace with a module-level singleton client created lazily and closed at process shutdown.
 
 ## Questions/Considerations
 

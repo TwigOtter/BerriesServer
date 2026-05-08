@@ -83,14 +83,14 @@ async def get_completion(
 
 async def _anthropic_completion(system_prompt: str, messages: list[dict], max_tokens: int, model: str) -> str:
     import anthropic
-    client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-    message = await client.messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        system=system_prompt,
-        messages=messages,
-    )
-    return message.content[0].text
+    async with anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY) as client:
+        message = await client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=messages,
+        )
+        return message.content[0].text
 
 
 async def _ollama_completion(system_prompt: str, messages: list[dict], max_tokens: int) -> str:
