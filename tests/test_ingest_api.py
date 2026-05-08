@@ -43,7 +43,7 @@ async def client(mock_collection, tmp_path):
         patch("shared.user_db.init_db"),
         patch("shared.user_db.upsert_user"),
         patch("shared.ask_berries.log_interaction"),
-        patch("shared.ask_berries.log_retrieval"),
+        patch("shared.chroma_client.log_retrieval"),
         patch("ingest_api.main.USERS_DB_PATH", tmp_path / "users.db"),
         patch("ingest_api.main.TRANSCRIPTS_DIR", tmp_path / "transcripts"),
         patch("ingest_api.main.INGEST_SECRET", ""),

@@ -13,6 +13,7 @@ Usage:
 
 import chromadb
 from shared.config import CHROMADB_DIR, CHROMA_COLLECTION, DATA_DIR, CHROMA_N_RESULTS, CHROMA_L2_THRESHOLD
+from shared.retrieval_log import log_retrieval
 
 _client: chromadb.ClientAPI | None = None
 _collection = None
@@ -131,6 +132,12 @@ def query_chroma_multi(queries: list[str], n_results: int = CHROMA_N_RESULTS) ->
     #   [("chunk_001", "text...", {...}), ("chunk_005", "text...", {...}), ...],  <- query 1
     #   [("chunk_003", "text...", {...}), ("chunk_001", "text...", {...}), ...],  <- query 2
     # ]
+
+    # Record per-rewritten-query results, excluding summaries (never re-summarize summaries)
+    for query, query_results in zip(queries, per_query):
+        raw_texts = [doc for _, doc, meta in query_results if meta.get("source") != "summary"]
+        if raw_texts:
+            log_retrieval(query=query, chunks=raw_texts)
 
     # Interleave round-robin: rank-0 from each query, then rank-1, etc.
     # Stops as soon as n_results unique chunks are collected.

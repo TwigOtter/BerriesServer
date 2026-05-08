@@ -32,7 +32,6 @@ from shared.prompt_builder import (
     format_user_context,
 )
 from shared.interaction_log import log_interaction
-from shared.retrieval_log import log_retrieval
 
 log = logging.getLogger(__name__)
 
@@ -83,9 +82,6 @@ async def _chroma_context(
         search_queries = await rewrite_queries(query, recent_context, username)
         docs = query_chroma_multi(search_queries)
         log.debug("ChromaDB returned %d doc(s) for %d rewritten query/queries", len(docs), len(search_queries))
-        raw_chunks = [doc for doc, meta in docs if meta.get("source") != "summary"]
-        if raw_chunks:
-            log_retrieval(query, raw_chunks)
         return docs, search_queries
     except Exception:
         log.exception("ChromaDB query/rewrite failed (no context injected)")
