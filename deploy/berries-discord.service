@@ -1,6 +1,7 @@
 [Unit]
 Description=Berries Discord Bot
-After=network.target
+After=network.target chroma-server.service berries-embed.service
+Requires=chroma-server.service berries-embed.service
 
 [Service]
 User=berries

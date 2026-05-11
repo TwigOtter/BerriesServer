@@ -160,7 +160,7 @@ async def _update_about(user: dict, interactions: list[str]) -> str | None:
         result = await get_completion(
             system_prompt=system,
             user_message=prompt,
-            max_tokens=500,
+            max_tokens=300,
             model=ANTHROPIC_ASSIST_MODEL,
         )
         return result.strip()

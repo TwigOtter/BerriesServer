@@ -33,10 +33,18 @@ CHUNK_OVERLAP_SEC = int(os.getenv("CHUNK_OVERLAP_SEC", "30"))    # keep last 30s
 CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "stream_transcripts")
 CHROMA_N_RESULTS = int(os.getenv("CHROMA_N_RESULTS", "4"))       # chunks to retrieve per query
 CHROMA_L2_THRESHOLD = float(os.getenv("CHROMA_L2_THRESHOLD", "0.8"))  # discard chunks with L2 distance above this
+# Address of the chroma-server.service (see deploy/chroma-server.service).
+CHROMA_HOST = os.getenv("CHROMA_HOST", "127.0.0.1")
+CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8001"))
 
-# ── Embedding model ────────────────────────────────────────────────────────
-# Uses sentence-transformers locally — no data leaves the box.
+# ── Embedding microservice ────────────────────────────────────────────────
+# Address of the berries-embed.service. Clients (ingest_api, discord_bot,
+# dream subprocess, reindex scripts) talk to this instead of loading the
+# embedding model into every process.
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1")
+EMBED_HOST = os.getenv("EMBED_HOST", "127.0.0.1")
+EMBED_PORT = int(os.getenv("EMBED_PORT", "8003"))
+EMBED_URL = f"http://{EMBED_HOST}:{EMBED_PORT}"
 
 # ── LLM backend ────────────────────────────────────────────────────────────
 # "anthropic" for Anthropic API, "ollama" for local Ollama instance.

@@ -27,6 +27,7 @@ import uuid
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from shared.chroma_client import get_collection
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -46,12 +47,6 @@ from shared.config import (
     USERS_DB_PATH,
 )
 from shared.ask_berries import ask_berries_twitch
-
-
-def get_collection():
-    from shared.chroma_client import get_collection as _get_collection
-    return _get_collection()
-
 
 def count_tokens(text: str) -> int:
     from shared.tokenizer import count_tokens as _count_tokens
