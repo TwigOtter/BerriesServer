@@ -15,23 +15,49 @@ Phases:
      - Generates a personalized birthday message from Berries for each
      - Posts to the Berries chat channel (so users can respond, not put on a pedestal)
 
-  3. RAG summarization
+  3. RAG summarization (LLM step only)
      - Reads today's retrieval log (logs/daily_interactions/YYYY-MM-DD_retrievals.json)
      - For each (query → chunks) entry, distills factual content via LLM
-     - Writes distilled summaries back to ChromaDB as source:summary entries
+     - Persists summaries to logs/daily_interactions/pending/YYYY-MM-DD_pending_summaries.json
      - Archives the processed retrieval log
+     - If a pending summaries file already exists for the date, skips the LLM
+       step entirely — Phase 4 can retry the upsert without re-spending tokens
+
+  4. Summary upsert
+     - Reads the pending summaries file produced by Phase 3
+     - Upserts all summaries to ChromaDB as source:summary entries
+     - On success, deletes the pending file
+     - On failure, leaves the pending file in place so the next run can retry
 
 Designed as discrete phases so future work (stale summary regeneration, etc.) slots in cleanly.
 """
 
 import asyncio
+import faulthandler
 import hashlib
 import json
 import logging
+import os
 import shutil
+import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# Dump Python-level traceback to stderr on SIGSEGV — captured by journald.
+faulthandler.enable()
+
+# Prevent HuggingFace tokenizers from forking worker threads — causes SIGSEGV
+# in short-lived processes when the tokenizer tries to parallelize on startup.
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+# Disable ChromaDB's posthog telemetry background thread.
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+# Prevent tqdm from starting its monitor thread (tqdm._monitor.TMonitor).
+import tqdm as _tqdm
+_tqdm.tqdm.monitor_interval = 0
 
 # Allow running as a script from the repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -61,6 +87,7 @@ log = logging.getLogger("dream")
 
 _INTERACTIONS_DIR = LOGS_DIR / "daily_interactions"
 _ARCHIVE_DIR = _INTERACTIONS_DIR / "archive"
+_PENDING_DIR = _INTERACTIONS_DIR / "pending"
 
 
 # ── Phase 1: User memory consolidation ───────────────────────────────────────
@@ -133,7 +160,7 @@ async def _update_about(user: dict, interactions: list[str]) -> str | None:
         result = await get_completion(
             system_prompt=system,
             user_message=prompt,
-            max_tokens=500,
+            max_tokens=300,
             model=ANTHROPIC_ASSIST_MODEL,
         )
         return result.strip()
@@ -275,32 +302,50 @@ async def phase_birthdays(today: datetime) -> int:
 
 # ── Phase 3: RAG summarization ────────────────────────────────────────────────
 
-async def phase_rag_summarization(date_str: str) -> int:
+async def phase_rag_summarization(date_str: str) -> Path | None:
     """
-    Distill each (query → chunks) entry from today's retrieval log into a clean
-    factual summary and write it to ChromaDB as source:summary.
-    Returns the count of summaries written.
+    Distill each (query → chunks) entry from today's retrieval log into clean
+    factual summaries via LLM, persist them to a pending JSON file, and archive
+    the retrieval log. Phase 4 reads the pending file and writes to ChromaDB.
+
+    If a pending summaries file already exists for `date_str`, skip the LLM
+    step entirely and return the existing path — lets Phase 4 retry the upsert
+    without re-spending API tokens.
+
+    Returns the pending file path, or None if there's nothing to summarise.
     """
     log.info("Phase 3: RAG summarization for %s", date_str)
 
-    path = _INTERACTIONS_DIR / f"{date_str}_retrievals.json"
-    if not path.exists():
+    pending_path = _PENDING_DIR / f"{date_str}_pending_summaries.json"
+    retrieval_path = _INTERACTIONS_DIR / f"{date_str}_retrievals.json"
+
+    # Pending file from a previous run — skip the LLM step.
+    if pending_path.exists():
+        log.info("Phase 3: pending summaries already exist at %s — skipping LLM step", pending_path)
+        # If the retrieval log also still exists, archive it now (previous run
+        # likely crashed between writing the pending file and archiving).
+        if retrieval_path.exists():
+            _ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(retrieval_path), str(_ARCHIVE_DIR / retrieval_path.name))
+            log.info("Archived stale retrieval log to %s", _ARCHIVE_DIR / retrieval_path.name)
+        return pending_path
+
+    if not retrieval_path.exists():
         log.info("No retrieval log found for %s — skipping", date_str)
-        return 0
+        return None
 
     try:
-        data: dict[str, list[str]] = json.loads(path.read_text(encoding="utf-8"))
+        data: dict[str, list[str]] = json.loads(retrieval_path.read_text(encoding="utf-8"))
     except Exception:
-        log.exception("Failed to read retrieval log at %s", path)
-        return 0
-
-    from shared.chroma_client import upsert_summary
+        log.exception("Failed to read retrieval log at %s", retrieval_path)
+        return None
 
     system = (
         "You distill factual information from conversational logs for a Twitch streamer's AI mascot. "
         "Be concise and factual. Output only the distilled facts — no preamble, no commentary."
     )
-    created = 0
+
+    pending: list[dict] = []
 
     for query, chunks in data.items():
         if not chunks:
@@ -335,38 +380,91 @@ async def phase_rag_summarization(date_str: str) -> int:
             continue
 
         chunk_id = f"summary_{hashlib.sha256(query.encode()).hexdigest()[:16]}_{date_str}"
-        try:
-            upsert_summary(
-                chunk_id=chunk_id,
-                text=summary,
-                metadata={
-                    "source": "summary",
-                    "generated_at": date_str,
-                    "stale": False,
-                    "origin_query": query[:200],
-                },
-            )
-            log.info("Written summary %s for query %r", chunk_id, query[:60])
-            created += 1
-        except Exception:
-            log.exception("Failed to write summary to ChromaDB for query %r", query[:60])
+        pending.append({
+            "id": chunk_id,
+            "document": summary,
+            "metadata": {"source": "summary", "generated_at": date_str, "stale": False, "origin_query": query[:200]},
+        })
+        log.info("Distilled summary for query %r", query[:60])
 
-    # Archive the retrieval log
+    # Atomic write: write to a tmp file then rename, so a crash mid-write
+    # doesn't leave a half-written JSON that Phase 4 fails to parse.
+    _PENDING_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_path = pending_path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(pending, indent=2), encoding="utf-8")
+    tmp_path.rename(pending_path)
+    log.info("Phase 3: wrote %d pending summaries to %s", len(pending), pending_path)
+
+    # Archive the retrieval log — its data is now captured in the pending file.
     _ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
-    dest = _ARCHIVE_DIR / path.name
-    shutil.move(str(path), str(dest))
-    log.info("Archived retrieval log to %s", dest)
+    shutil.move(str(retrieval_path), str(_ARCHIVE_DIR / retrieval_path.name))
+    log.info("Archived retrieval log to %s", _ARCHIVE_DIR / retrieval_path.name)
 
-    return created
+    return pending_path
+
+
+# ── Phase 4: Summary upsert ───────────────────────────────────────────────────
+
+def phase_upsert_summaries(pending_path: Path) -> int:
+    """
+    Read pending summaries from JSON and upsert them to ChromaDB IN A FRESH
+    SUBPROCESS via scripts/upsert_pending.py.
+
+    Why a subprocess: a direct in-process upsert segfaults reliably in
+    chromadb 1.5.1's Rust backend after asyncio.run() has executed in this
+    process — likely interpreter-state inherited from the closed event loop.
+    A fresh interpreter has no such history and runs cleanly (same as how
+    reindex_*.py scripts work).
+
+    On success, delete the pending file. On failure, leave it in place so
+    the next dream run can retry without re-spending LLM tokens.
+
+    Returns the count of summaries upserted (0 on failure).
+    """
+    log.info("Phase 4: upsert summaries from %s (subprocess)", pending_path)
+
+    try:
+        count = len(json.loads(pending_path.read_text(encoding="utf-8")))
+    except Exception:
+        log.exception("Failed to read pending summaries at %s", pending_path)
+        return 0
+
+    if not count:
+        log.info("Phase 4: no pending summaries — removing empty pending file")
+        pending_path.unlink(missing_ok=True)
+        return 0
+
+    upsert_script = Path(__file__).parent / "upsert_pending.py"
+    result = subprocess.run(
+        [sys.executable, str(upsert_script), str(pending_path)],
+        capture_output=True,
+        text=True,
+    )
+
+    # Forward subprocess output into our log stream so journald sees it.
+    for line in result.stdout.splitlines():
+        log.info("[upsert_pending] %s", line)
+    for line in result.stderr.splitlines():
+        log.warning("[upsert_pending] %s", line)
+
+    if result.returncode != 0:
+        log.error(
+            "Phase 4: upsert subprocess exited %d — leaving pending file in place for retry",
+            result.returncode,
+        )
+        return 0
+
+    pending_path.unlink(missing_ok=True)
+    log.info("Phase 4 complete: %d summaries written; pending file removed", count)
+    return count
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-async def main() -> None:
+async def main() -> Path | None:
     now = datetime.now(timezone.utc)
-    # Dream at 3am means we're consolidating interactions from "yesterday" in UTC terms,
-    # but local midnight is typically what matters — just process today's date.
-    date_str = now.strftime("%Y-%m-%d")
+    # At 3am UTC we're consolidating the previous calendar day's interactions.
+    date_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
     log.info("Dreaming started at %s (processing %s)", now.isoformat(), date_str)
 
     user_count = await phase_user_memory(date_str)
@@ -375,11 +473,24 @@ async def main() -> None:
     birthday_count = await phase_birthdays(now)
     log.info("Phase 2 complete: %d birthday message(s) posted", birthday_count)
 
-    rag_count = await phase_rag_summarization(date_str)
-    log.info("Phase 3 complete: %d summary/summaries written to ChromaDB", rag_count)
+    pending_path = await phase_rag_summarization(date_str)
+    if pending_path:
+        log.info("Phase 3 complete: pending summaries staged at %s", pending_path)
+    else:
+        log.info("Phase 3 complete: nothing to summarise")
 
-    log.info("Dreaming complete.")
+    return pending_path
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Phases 1, 2, and 3 (LLM calls) run inside asyncio.
+    # Phase 4 spawns a subprocess for the ChromaDB upsert — see phase_upsert_summaries.
+    pending_path = asyncio.run(main())
+
+    if pending_path and pending_path.exists():
+        phase_upsert_summaries(pending_path)
+    else:
+        log.info("Phase 4: no pending summaries file — skipping")
+
+    log.info("Dreaming complete.")
+    os._exit(0)

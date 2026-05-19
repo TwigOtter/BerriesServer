@@ -2,7 +2,14 @@
 shared/chroma_client.py
 
 Singleton ChromaDB client shared across services.
-Uses nomic-embed-text-v1 for local embedding — no data leaves the box.
+
+Architecture:
+  - chroma-server.service (deploy/chroma-server.service) is the single
+    writer/reader of the SQLite store. We connect to it via HttpClient.
+  - berries-embed.service (deploy/berries-embed.service) hosts the
+    nomic-embed-text-v1 model. Our embedding function below POSTs text
+    to it instead of loading the model in-process — keeps every client
+    process slim and avoids loading the same 2GB model N times.
 
 Usage:
     from shared.chroma_client import get_collection
@@ -11,8 +18,18 @@ Usage:
     results = collection.query(query_texts=["what did Twig say about disc golf?"], n_results=4)
 """
 
+import httpx
+import numpy as np
 import chromadb
-from shared.config import CHROMADB_DIR, CHROMA_COLLECTION, DATA_DIR, CHROMA_N_RESULTS, CHROMA_L2_THRESHOLD
+
+from shared.config import (
+    CHROMA_COLLECTION,
+    CHROMA_HOST,
+    CHROMA_PORT,
+    CHROMA_N_RESULTS,
+    CHROMA_L2_THRESHOLD,
+    EMBED_URL,
+)
 from shared.retrieval_log import log_retrieval
 
 _client: chromadb.ClientAPI | None = None
@@ -21,35 +38,41 @@ _collection = None
 
 class _NomicEmbeddingFunction:
     """
-    nomic-embed-text-v1 embedding function for ChromaDB.
-    Uses 'search_document:' prefix for both storage and queries — sufficient
-    for symmetric retrieval over conversational text.
-    Max sequence length: 8192 tokens.
+    Calls the berries-embed microservice over HTTP to embed documents/queries.
+    nomic-embed-text-v1 uses asymmetric retrieval, so documents and queries
+    get different prefixes ('search_document:' vs 'search_query:'). The
+    microservice handles the prefixing — this class just routes to the
+    correct endpoint.
     """
-    def __init__(self, cache_folder: str):
-        from sentence_transformers import SentenceTransformer
-        self._model = SentenceTransformer(
-            "nomic-ai/nomic-embed-text-v1",
-            trust_remote_code=True,
-            cache_folder=cache_folder,
-        )
+    def __init__(self, embed_url: str):
+        self._url = embed_url.rstrip("/")
+        # 5-minute read timeout — large reindex batches on CPU can take
+        # tens of seconds; 30s was too tight. GPU never gets close.
+        # httpx.Client is thread-safe and reuses connections.
+        self._http = httpx.Client(base_url=self._url, timeout=300.0)
 
     def name(self) -> str:
         return "nomic-embed-text-v1"
 
-    def __call__(self, input: list[str]) -> list[list[float]]:
-        prefixed = ["search_document: " + text for text in input]
-        return self._model.encode(prefixed, normalize_embeddings=True).tolist()
+    def __call__(self, input: list[str]) -> list[np.ndarray]:
+        return self._post("/embed/documents", input)
 
-    def embed_query(self, input: list[str]) -> list[list[float]]:
-        prefixed = ["search_query: " + text for text in input]
-        return self._model.encode(prefixed, normalize_embeddings=True).tolist()
+    def embed_query(self, input: list[str]) -> list[np.ndarray]:
+        return self._post("/embed/queries", input)
+
+    def _post(self, path: str, texts: list[str]) -> list[np.ndarray]:
+        resp = self._http.post(path, json={"texts": list(texts)})
+        resp.raise_for_status()
+        # ChromaDB's HttpClient query path calls .tolist() on each embedding —
+        # it expects numpy arrays, not plain lists. Convert here at the JSON
+        # boundary so all chromadb callers get the type they expect.
+        return [np.asarray(emb, dtype=np.float32) for emb in resp.json()["embeddings"]]
 
 
 def get_client() -> chromadb.ClientAPI:
     global _client
     if _client is None:
-        _client = chromadb.PersistentClient(path=str(CHROMADB_DIR))
+        _client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
     return _client
 
 
@@ -57,9 +80,7 @@ def get_collection():
     global _collection
     if _collection is None:
         client = get_client()
-        hf_cache = DATA_DIR / "huggingface"
-        hf_cache.mkdir(exist_ok=True)
-        ef = _NomicEmbeddingFunction(cache_folder=str(hf_cache))
+        ef = _NomicEmbeddingFunction(embed_url=EMBED_URL)
         _collection = client.get_or_create_collection(
             name=CHROMA_COLLECTION,
             embedding_function=ef,

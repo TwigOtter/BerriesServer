@@ -1,19 +1,19 @@
 [Unit]
-Description=Berries Discord Bot
-After=network.target chroma-server.service berries-embed.service
-Requires=chroma-server.service berries-embed.service
+Description=Berries ChromaDB Server (single-writer process for the chroma.sqlite3 store)
+After=network.target
 
 [Service]
 User=berries
 WorkingDirectory=/opt/berries
-ExecStart=/opt/berries/venv/bin/python -m discord_bot.main
+ExecStart=/opt/berries/venv/bin/chroma run --path /opt/berries/data/chromadb --host 127.0.0.1 --port 8001
 Restart=on-failure
 RestartSec=5
 EnvironmentFile=/opt/berries/.env
 
 # ── Sandboxing / hardening ────────────────────────────────────────────────
-# If any of these break the service on your host, remove the offending line
-# and re-run `systemd-analyze security berries-discord` to check overall score.
+# Mirrors berries-ingest/discord. If any of these break the service on your
+# host, remove the offending line and re-run
+# `systemd-analyze security chroma-server` to check overall score.
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -34,10 +34,8 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-# NOTE: The previous deny list (`~@privileged @resources`) killed the service
-# with SIGSYS because PyTorch/sentence-transformers (pulled in by ChromaDB)
-# call syscalls in @resources during init. The @system-service allowlist alone
-# is already a reasonable tightening; the deny list is omitted deliberately.
+# NOTE: deny list (`~@privileged @resources`) omitted — see berries-ingest
+# for context (PyTorch/sentence-transformers needs syscalls in @resources).
 UMask=0077
 
 [Install]

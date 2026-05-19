@@ -20,6 +20,7 @@ import logging
 import logging.handlers
 import random
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import hmac
@@ -327,6 +328,31 @@ async def _count_recent_bot_messages(channel: discord.TextChannel, before: disco
         return 0
 
 
+@asynccontextmanager
+async def _maybe_typing(channel: discord.abc.Messageable):
+    """
+    Show the typing indicator if Discord allows it; if Discord rejects the
+    request (e.g. 429 rate-limit on the typing endpoint), proceed silently
+    so the response itself still goes out. Typing is purely cosmetic and
+    must never gate message delivery.
+    """
+    cm = channel.typing()
+    started = False
+    try:
+        await cm.__aenter__()
+        started = True
+    except discord.HTTPException as e:
+        log.warning("Typing indicator unavailable (%s); responding without it", e)
+    try:
+        yield
+    finally:
+        if started:
+            try:
+                await cm.__aexit__(None, None, None)
+            except Exception:
+                pass
+
+
 # ── Events ─────────────────────────────────────────────────────────────────
 
 @bot.event
@@ -439,7 +465,7 @@ async def on_message(message: discord.Message) -> None:
             return
 
     try:
-        async with message.channel.typing():
+        async with _maybe_typing(message.channel):
             history = await _get_channel_history(message.channel, before=message)
             response = await ask_berries_discord_mention(
                 query=content,

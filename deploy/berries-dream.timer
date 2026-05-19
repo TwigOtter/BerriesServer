@@ -3,7 +3,7 @@ Description=Berries nightly dreaming phase timer
 Requires=berries-dream.service
 
 [Timer]
-OnCalendar=*-*-* 03:00:00
+OnCalendar=*-*-* 03:00:00 America/Chicago
 Persistent=true
 
 [Install]
