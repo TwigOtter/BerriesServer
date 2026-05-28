@@ -148,13 +148,21 @@ async def _update_about(user: dict, interactions: list[str]) -> str | None:
         f"Here is what Berries currently knows about {name}:\n"
         f"{chr(10).join(profile_lines)}\n\n"
         f"Here are their interactions with Berries today:\n{interactions_text}\n\n"
-        f"Please write an updated one paragraph about blurb for {name} that incorporates any new "
-        f"information from today's interactions. Include their personality, interests, fursona details, "
-        f"recurring topics, relationship to the stream — whatever is useful for Berries to remember. "
-        f"Be specific and factual. Third person, present tense. No preamble, just the blurb, as it will be stored directly in the database. "
-        f"If you don't have enough information to say anything new, just return the existing blurb unchanged."
+        f"Rewrite {name}'s about blurb to reflect what Berries should remember about them now. "
+        f"Target 3–5 sentences, ~150 words max. Third person, present tense. Be specific and factual.\n\n"
+        f"Treat this as a fresh distillation, not an append. Your job is to keep the blurb compact "
+        f"and current: weave in anything important from today, but also prune stale or one-off details "
+        f"that haven't come up again. Prioritize durable traits — personality, recurring interests, "
+        f"fursona details, relationship to the stream — over passing chatter. The blurb should not grow "
+        f"longer over time; if anything, it should get tighter as patterns emerge.\n\n"
+        f"No preamble, just the blurb — it goes straight into the database. If today's interactions add "
+        f"nothing meaningful, you may tighten the existing blurb or return it unchanged."
     )
-    system = "You maintain concise viewer profiles for a Twitch streamer's AI mascot. Be factual and specific."
+    system = (
+        "As part of a nightly process, you review Twitch and Discord user interactions with an AI chatbot named Berries. "
+        "Your goal is to create and maintain concise, evolving user profiles that provide context for future interactions with the chatbot. "
+        "Be factual and specific. Keep profiles current and relevant — rewrite, add, or prune details as the situation calls for."
+    )
 
     try:
         result = await get_completion(
