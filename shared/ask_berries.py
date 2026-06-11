@@ -12,8 +12,7 @@ Public API:
     ask_berries_discord()           — one-off Discord response (currently unused, but available for simple replies that don't need the full @mention pipeline)
     ask_berries_twitch()            — full Twitch @mention pipeline (ChromaDB + nickname + log)
     ask_berries_discord_mention()   — full Discord @mention pipeline (ChromaDB + nickname + log)
-    ask_berries_movie_announcement()    — movie night announcement + gif query (Twig-directed)
-    ask_berries_twitch_going_live()     — going-live announcement + gif query (Twig-directed)
+    ask_berries_twitch_going_live() — going-live announcement + gif query (Twig-directed)
 """
 
 import asyncio
@@ -33,13 +32,6 @@ from shared.prompt_builder import (
 from shared.interaction_log import log_interaction
 
 log = logging.getLogger(__name__)
-
-# System instruction used when Berries is collaborating with Twig to write content
-# for his Discord community rather than responding to a viewer.
-_TWIG_COLLABORATION_INSTRUCTION = """\
-YOUR CURRENT TASK:
-You are currently assisting Twig in communicating with his Discord community. \
-Your response will be posted verbatim to the server — write for the audience, not back to Twig."""
 
 
 # ── Internal helpers ─────────────────────────────────────────────────────────
@@ -254,71 +246,6 @@ async def ask_berries_discord_mention(
     return response
 
 
-async def ask_berries_movie_announcement(
-    movie_title: str,
-    movie_year: str,
-    notes: str = "",
-) -> tuple[str, str] | None:
-    """
-    Movie night announcement pipeline. Returns (announcement, gif_query) or None on failure.
-
-    Queries ChromaDB for past discussions about the movie, then makes two sequential LLM calls:
-      1. Twig asks Berries to write a Discord announcement → announcement text
-      2. Berries picks a Giphy search query to accompany the announcement → gif_query string
-
-    The system prompt uses the collaboration framing (Twig-directed) rather than the
-    @mention response instructions, since Berries is writing *for* the audience, not *to* a viewer.
-    """
-    docs, _ = await _chroma_context(
-        query=f"{movie_title} ({movie_year}) movie",
-        recent_context="",
-        username="Twig",
-    )
-    chroma_block = format_chroma_context(docs) if docs else ""
-    system = build_system_prompt(
-        _load_personality(),
-        ContextType.DISCORD_ANNOUNCE,
-        "\n\n".join(filter(None, [chroma_block, _TWIG_COLLABORATION_INSTRUCTION])),
-    )
-
-    user_msg = (
-        f"[Twig]: Hey Berries, tonight we're going to be watching **{movie_title} ({movie_year})** "
-        f"for our weekly movie night starting right now. Can you write a friendly announcement to the "
-        f"Discord server that tells people what we will be watching, your silly or snarky personal "
-        f"opinions on the movie, and then tell people that they're welcome to join if that sounds like "
-        f"a good time to them? Don't pressure people, just let them know what's happening and tell them "
-        f"they're welcome to join. Please write your message for the audience, as your response will be "
-        f"posted _verbatim_ without formatting changes to the announcements channel for all to see."
-    )
-    if notes:
-        user_msg += f" Additional context from Twig: {notes}"
-
-    log.debug("ask_berries_movie_announcement — requesting announcement for %r (%s)", movie_title, movie_year)
-    announcement = await ask_berries(system_prompt=system, user_message=user_msg, max_tokens=600)
-    if not announcement:
-        log.warning("ask_berries_movie_announcement — LLM returned empty announcement")
-        return None
-    announcement = cleanup_response(announcement)
-
-    gif_prompt = (
-        "Thank you! Can you now generate a search query for Giphy to find a gif that fits the vibe "
-        "of your announcement? Reply with ONLY the search query, 2-5 words, no punctuation, no explanation."
-    )
-    gif_query = await ask_berries(
-        system_prompt=system,
-        messages=[
-            {"role": "user", "content": user_msg},
-            {"role": "assistant", "content": announcement},
-            {"role": "user", "content": gif_prompt},
-        ],
-        max_tokens=32,
-    )
-    gif_query = (gif_query or "").strip()
-    log.debug("ask_berries_movie_announcement — gif_query: %r", gif_query)
-
-    return announcement, gif_query
-
-
 async def ask_berries_twitch_going_live(
     stream_title: str,
     stream_category: str,
@@ -326,7 +253,7 @@ async def ask_berries_twitch_going_live(
     """
     Going-live announcement pipeline. Returns (announcement, gif_query) or None on failure.
 
-    Makes two sequential LLM calls under the collaboration framing:
+    Makes two sequential LLM calls:
       1. Twig asks Berries to write a going-live Discord announcement → announcement text
       2. Berries picks a Giphy search query to accompany the announcement → gif_query string
     """
@@ -341,11 +268,7 @@ async def ask_berries_twitch_going_live(
         )
         return None
 
-    system = build_system_prompt(
-        _load_personality(),
-        ContextType.DISCORD_ANNOUNCE,
-        _TWIG_COLLABORATION_INSTRUCTION,
-    )
+    system = build_system_prompt(_load_personality(), ContextType.DISCORD_ANNOUNCE)
 
     user_msg = (
         f"[Twig]: Hey Berries, I just went live! Stream title: '{stream_title}', "

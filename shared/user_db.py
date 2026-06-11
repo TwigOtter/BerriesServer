@@ -400,21 +400,6 @@ def add_note(t_login: str, key: str, value: str) -> None:
         conn.commit()
 
 
-def increment_streams_watched(t_logins: list[str]) -> None:
-    """
-    Increment t_streams_watched for all logins in the list.
-    Call once per stream end for everyone who chatted that session.
-    """
-    if not t_logins:
-        return
-    with _connect() as conn:
-        conn.executemany(
-            "UPDATE users SET t_streams_watched = t_streams_watched + 1 WHERE t_login = ?",
-            [(u,) for u in t_logins],
-        )
-        conn.commit()
-
-
 def link_discord(t_login: str, d_id: str, d_username: str | None = None) -> dict:
     """
     Associate a Discord user ID with a Twitch login.

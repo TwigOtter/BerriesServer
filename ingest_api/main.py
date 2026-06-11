@@ -75,9 +75,6 @@ _last_event_time: float = time.time()
 # Shared deque for recent chunks — used for short-term memory in response generation
 recent_chunks: deque = deque(maxlen=2)
 
-# Tracks all usernames who chatted this session (for streams_watched rollup at stream end)
-_session_chatters: set[str] = set()
-
 # Current stream metadata — updated by /event/stream-update
 _stream_metadata: dict = {"title": "", "category": ""}
 
@@ -330,8 +327,6 @@ async def receive_chat(
 
     _buffer.append({"source": display_name, "text": cleaned, "timestamp": time.time()})
     _last_event_time = time.time()
-    # Keyed by t_login so the stream-end rollup matches user_db rows.
-    _session_chatters.add(username)
 
     if _buffer_token_count() >= CHUNK_TOKEN_LIMIT:
         await _flush_buffer(reason="token_limit")
@@ -459,32 +454,6 @@ async def going_live(
     return {"status": "ok"}
 
 
-@app.post("/event/stream-end")
-async def stream_end(
-    request: Request,
-    x_secret: str | None = Header(default=None),
-) -> dict:
-    """
-    Receive a stream-end event from Streamer.bot.
-
-    Flushes the remaining buffer and rolls up t_streams_watched for everyone
-    who chatted this session. Configure Streamer.bot's built-in
-    "Stream Offline" trigger to POST an empty JSON body here.
-    """
-    _auth_check(x_secret)
-
-    await _flush_buffer(reason="stream_end")
-
-    chatters = sorted(_session_chatters)
-    if chatters:
-        from shared.user_db import increment_streams_watched
-        await asyncio.to_thread(increment_streams_watched, chatters)
-        _session_chatters.clear()
-
-    logger.info("/event/stream-end — rolled up %d chatter(s)", len(chatters))
-    return {"status": "ok", "chatters_counted": len(chatters)}
-
-
 @app.get("/health")
 async def health() -> dict:
     return {
@@ -493,7 +462,6 @@ async def health() -> dict:
         "buffer_tokens": _buffer_token_count(),
         "recent_chunks": len(recent_chunks),
         "stream_metadata": _stream_metadata,
-        "session_chatters": len(_session_chatters),
     }
 
 

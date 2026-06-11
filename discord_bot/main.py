@@ -5,7 +5,7 @@ Discord bot for Berries' community server.
 
 Responsibilities:
   - Respond to @mentions anywhere in the server (RAG-backed)
-  - Slash commands: /ping, /movie suggest add|remove|list, /movie announce, /movie history list|remove
+  - Slash commands: /ping, /movie suggest add|remove|list, /movie history add|list|remove
   - Webhook server (localhost:8002) for going-live events forwarded from ingest_api.
     Bound to 127.0.0.1 only — not reachable over the LAN. Authenticated via
     the shared INGEST_SECRET header, same as ingest_api.
@@ -19,7 +19,6 @@ import json
 import logging
 import logging.handlers
 import random
-import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -30,19 +29,17 @@ import discord
 import httpx
 import uvicorn
 from discord import app_commands
-from discord.ext import commands, tasks
+from discord.ext import commands
 from fastapi import FastAPI, Header, HTTPException, Request
 
 from shared.chroma_client import get_collection
 from shared.config import (
-    CHUNK_TIMEOUT_SEC,
     CHUNK_TOKEN_LIMIT,
     DISCORD_ANNOUNCE_CHANNEL_ID,
     DISCORD_BERRIES_CHANNEL_WHITELIST_IDS,
     DISCORD_BERRIES_CHAT_CHANNEL_ID,
     DISCORD_BOT_WEBHOOK_PORT,
     DISCORD_CHUNK_OVERLAP_MESSAGES,
-    DISCORD_EVENT_ROLE_ID,
     DISCORD_LOG_CHANNEL_ID,
     DISCORD_RULES_STICKER_ID,
     DISCORD_STICKERS_ONLY_CHANNEL_IDS,
@@ -59,7 +56,6 @@ from shared.tokenizer import count_tokens
 from shared.prompt_builder import format_channel_history
 from shared.ask_berries import (
     ask_berries_discord_mention,
-    ask_berries_movie_announcement,
     ask_berries_twitch_going_live,
 )
 from shared.movie_db import (
@@ -156,7 +152,9 @@ async def _get_rules_sticker(guild: discord.Guild) -> discord.GuildSticker | Non
 
 # ── Watch channel buffer ────────────────────────────────────────────────────
 # Each channel gets its own list of {"source", "text", "timestamp"} entries.
-# Flushed to ChromaDB at CHUNK_TOKEN_LIMIT tokens or CHUNK_TIMEOUT_SEC inactivity.
+# Flushed to ChromaDB at CHUNK_TOKEN_LIMIT tokens. There is deliberately no
+# inactivity flush: Discord conversations are slow and asynchronous (hours
+# between messages is normal), so time-based chunking would fragment them.
 
 _watch_buffers: dict[int, list[dict]] = {}
 
@@ -205,12 +203,6 @@ async def _flush_watch_channel(channel_id: int, reason: str) -> None:
     except Exception:
         log.exception("Failed to embed watch channel chunk for channel %s", channel_id)
 
-    # On a timeout flush there's no conversation to carry context into — and
-    # keeping stale entries would make the flush timer re-flush them forever.
-    if reason == "timeout":
-        _watch_buffers[channel_id] = []
-        return
-
     # Keep last DISCORD_CHUNK_OVERLAP_MESSAGES entries as seed for next chunk,
     # but trim from the front if the overlap itself already exceeds the token limit.
     # If even a single entry exceeds the limit (e.g. a long Berries response), clear
@@ -221,20 +213,6 @@ async def _flush_watch_channel(channel_id: int, reason: str) -> None:
     if count_tokens("\n".join(e["text"] for e in overlap)) >= CHUNK_TOKEN_LIMIT:
         overlap = []
     _watch_buffers[channel_id] = overlap
-
-
-@tasks.loop(seconds=10)
-async def _watch_flush_timer() -> None:
-    """Flush watch buffers whose newest entry is older than CHUNK_TIMEOUT_SEC.
-
-    Without this, a quiet channel's tail conversation sits in memory
-    indefinitely and is lost on restart — only the token-limit flush in
-    on_message would ever fire.
-    """
-    now = time.time()
-    for channel_id, buf in list(_watch_buffers.items()):
-        if buf and (now - buf[-1]["timestamp"]) >= CHUNK_TIMEOUT_SEC:
-            await _flush_watch_channel(channel_id, reason="timeout")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -396,8 +374,6 @@ async def on_ready() -> None:
         log.info("Synced %d slash command(s)", len(synced))
     except Exception:
         log.exception("Failed to sync slash commands")
-    if not _watch_flush_timer.is_running():
-        _watch_flush_timer.start()
 
 
 @bot.tree.error
@@ -1167,10 +1143,10 @@ async def movie_suggest_remove(interaction: discord.Interaction, title: str) -> 
         )
 
 
-@movie_group.command(name="announce", description="Announce tonight's movie and mark it as watched")
+@history_group.command(name="add", description="Mark a movie as watched")
 @app_commands.default_permissions(manage_messages=True)
-@app_commands.describe(title="Movie title to announce", notes="Optional notes from Twig about this movie")
-async def movie_announce(interaction: discord.Interaction, title: str, notes: str = "") -> None:
+@app_commands.describe(title="Title of the movie to mark as watched")
+async def movie_history_add(interaction: discord.Interaction, title: str) -> None:
     await interaction.response.defer()
 
     result = await _omdb_search(title)
@@ -1182,32 +1158,13 @@ async def movie_announce(interaction: discord.Interaction, title: str, notes: st
     movie_title = result["Title"]
     year = result["Year"]
 
-    result_pair = await ask_berries_movie_announcement(movie_title, year, notes=notes)
-    if not result_pair:
-        await interaction.followup.send("*rustles nervously* ...something went wrong generating the announcement.")
-        return
-    announcement, gif_query = result_pair
-
     # Ensure the movie exists in the DB before marking watched
     if not get_suggestion(imdb_id):
         add_suggestion(imdb_id, movie_title, year, interaction.user.display_name)
     mark_watched(imdb_id)
 
-    gif_url = await _fetch_gif(gif_query) if gif_query else None
-    role_ping = f"<@&{DISCORD_EVENT_ROLE_ID}>\n" if DISCORD_EVENT_ROLE_ID else ""
-    message = f"# {movie_title} ({year})\n" + role_ping + announcement
-
-    posted = await _post_to_announce(message)
-    if posted:
-        if gif_url:
-            channel = bot.get_channel(DISCORD_ANNOUNCE_CHANNEL_ID)
-            if channel:
-                await channel.send(gif_url)
-        await interaction.followup.send(
-            f"Announced **{movie_title}** in <#{DISCORD_ANNOUNCE_CHANNEL_ID}> and marked as watched!"
-        )
-    else:
-        await interaction.followup.send(message + (f"\n{gif_url}" if gif_url else ""))
+    log.info("Marked %r (%s) watched by %s", movie_title, imdb_id, interaction.user)
+    await interaction.followup.send(f"Marked **{movie_title} ({year})** as watched.")
 
 
 @history_group.command(name="list", description="See movies we've already watched")
