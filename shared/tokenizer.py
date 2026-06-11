@@ -7,12 +7,21 @@ Uses tiktoken with the cl100k_base encoding (compatible with most modern models)
 
 import tiktoken
 
-_enc = tiktoken.get_encoding("cl100k_base")
+# Loaded lazily — tiktoken fetches the encoding file on first use, so doing
+# this at import time makes every importer pay the cost (and fail offline).
+_enc: tiktoken.Encoding | None = None
+
+
+def _get_enc() -> tiktoken.Encoding:
+    global _enc
+    if _enc is None:
+        _enc = tiktoken.get_encoding("cl100k_base")
+    return _enc
 
 
 def count_tokens(text: str) -> int:
     """Return the number of tokens in a string."""
-    return len(_enc.encode(text))
+    return len(_get_enc().encode(text))
 
 
 def count_tokens_for_messages(messages: list[dict]) -> int:

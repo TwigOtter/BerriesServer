@@ -60,6 +60,9 @@ async def lifespan(_app):
     init_db()
     asyncio.create_task(_flush_timer_loop())
     yield
+    # Flush whatever is still buffered so a restart mid-stream doesn't drop
+    # up to CHUNK_TOKEN_LIMIT tokens of transcript.
+    await _flush_buffer(reason="shutdown")
 
 
 app = FastAPI(title="Berries Ingest API", lifespan=lifespan)
@@ -192,21 +195,26 @@ async def _flush_buffer(reason: str) -> None:
     with open(jsonl_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(chunk) + "\n")
 
-    # 2. Embed and store in ChromaDB
-    collection = get_collection()
-    collection.add(
-        documents=[text],
-        ids=[chunk_id],
-        metadatas=[{
-            "stream_date": stream_date,
-            "stream_title": _stream_metadata["title"],
-            "stream_category": _stream_metadata["category"],
-            "start_time": start_ts,
-            "end_time": end_ts,
-            "flush_reason": reason,
-            "token_count": token_count,
-        }],
-    )
+    # 2. Embed and store in ChromaDB. The embedding round-trip and Chroma
+    # client are synchronous — run them off the event loop so a slow embed
+    # doesn't stall every other request handler.
+    def _chroma_add() -> None:
+        collection = get_collection()
+        collection.add(
+            documents=[text],
+            ids=[chunk_id],
+            metadatas=[{
+                "stream_date": stream_date,
+                "stream_title": _stream_metadata["title"],
+                "stream_category": _stream_metadata["category"],
+                "start_time": start_ts,
+                "end_time": end_ts,
+                "flush_reason": reason,
+                "token_count": token_count,
+            }],
+        )
+
+    await asyncio.to_thread(_chroma_add)
 
     # 3. Push to deque for short-term memory
     recent_chunks.append(chunk)
@@ -307,7 +315,8 @@ async def receive_chat(
     except (ValueError, TypeError):
         parsed_user_id = None
     from shared.user_db import upsert_user
-    upsert_user(
+    await asyncio.to_thread(
+        upsert_user,
         t_login=username,
         t_display_name=display_name,
         t_subscription_tier=sub_tier,
@@ -321,7 +330,8 @@ async def receive_chat(
 
     _buffer.append({"source": display_name, "text": cleaned, "timestamp": time.time()})
     _last_event_time = time.time()
-    _session_chatters.add(display_name)
+    # Keyed by t_login so the stream-end rollup matches user_db rows.
+    _session_chatters.add(username)
 
     if _buffer_token_count() >= CHUNK_TOKEN_LIMIT:
         await _flush_buffer(reason="token_limit")
@@ -449,6 +459,32 @@ async def going_live(
     return {"status": "ok"}
 
 
+@app.post("/event/stream-end")
+async def stream_end(
+    request: Request,
+    x_secret: str | None = Header(default=None),
+) -> dict:
+    """
+    Receive a stream-end event from Streamer.bot.
+
+    Flushes the remaining buffer and rolls up t_streams_watched for everyone
+    who chatted this session. Configure Streamer.bot's built-in
+    "Stream Offline" trigger to POST an empty JSON body here.
+    """
+    _auth_check(x_secret)
+
+    await _flush_buffer(reason="stream_end")
+
+    chatters = sorted(_session_chatters)
+    if chatters:
+        from shared.user_db import increment_streams_watched
+        await asyncio.to_thread(increment_streams_watched, chatters)
+        _session_chatters.clear()
+
+    logger.info("/event/stream-end — rolled up %d chatter(s)", len(chatters))
+    return {"status": "ok", "chatters_counted": len(chatters)}
+
+
 @app.get("/health")
 async def health() -> dict:
     return {
@@ -544,7 +580,10 @@ async def receive_mention(
         recent_chunks=list(recent_chunks),
         recent_buffer_text="\n".join(e["text"] for e in _buffer[-15:]),
     )
-    await _post_to_streamerbot(response_text, chat=chat, tts=tts)
+    if response_text:
+        await _post_to_streamerbot(response_text, chat=chat, tts=tts)
+    else:
+        logger.warning("/event/mention — LLM returned no response; nothing posted to Streamer.bot")
 
     return {
         "message": response_text,

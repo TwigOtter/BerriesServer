@@ -16,10 +16,9 @@ Public API:
     ask_berries_twitch_going_live()     — going-live announcement + gif query (Twig-directed)
 """
 
+import asyncio
 import logging
 import re
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 
 from shared.config import PERSONALITY_FILE
 from shared.llm_client import get_completion, rewrite_queries
@@ -80,7 +79,9 @@ async def _chroma_context(
     """
     try:
         search_queries = await rewrite_queries(query, recent_context, username)
-        docs = query_chroma_multi(search_queries)
+        # query_chroma_multi blocks on a synchronous embedding HTTP call —
+        # run it off the event loop so the bot stays responsive.
+        docs = await asyncio.to_thread(query_chroma_multi, search_queries)
         log.debug("ChromaDB returned %d doc(s) for %d rewritten query/queries", len(docs), len(search_queries))
         return docs, search_queries
     except Exception:
@@ -204,7 +205,6 @@ async def ask_berries_discord_mention(
     display_name: str,
     discord_id: str,
     channel_history: str,
-    created_at: datetime,
 ) -> str | None:
     """
     Full Discord @mention pipeline.
@@ -217,7 +217,6 @@ async def ask_berries_discord_mention(
         display_name:    Discord display name shown in the user_message to Berries.
         discord_id:      Discord user ID string; used for nickname lookup in user_db.
         channel_history: Pre-fetched formatted channel history string (from _get_channel_history).
-        created_at:      Message timestamp; formatted into the user_message for Berries.
     """
     nickname = _get_nickname_discord(discord_id, display_name)
     user_message = f"{nickname} said: {query}"
@@ -276,8 +275,11 @@ async def ask_berries_movie_announcement(
         username="Twig",
     )
     chroma_block = format_chroma_context(docs) if docs else ""
-    personality = _load_personality()
-    system = "\n\n".join(filter(None, [personality, chroma_block, _TWIG_COLLABORATION_INSTRUCTION]))
+    system = build_system_prompt(
+        _load_personality(),
+        ContextType.DISCORD_ANNOUNCE,
+        "\n\n".join(filter(None, [chroma_block, _TWIG_COLLABORATION_INSTRUCTION])),
+    )
 
     user_msg = (
         f"[Twig]: Hey Berries, tonight we're going to be watching **{movie_title} ({movie_year})** "
@@ -339,8 +341,11 @@ async def ask_berries_twitch_going_live(
         )
         return None
 
-    personality = _load_personality()
-    system = "\n\n".join([personality, _TWIG_COLLABORATION_INSTRUCTION])
+    system = build_system_prompt(
+        _load_personality(),
+        ContextType.DISCORD_ANNOUNCE,
+        _TWIG_COLLABORATION_INSTRUCTION,
+    )
 
     user_msg = (
         f"[Twig]: Hey Berries, I just went live! Stream title: '{stream_title}', "

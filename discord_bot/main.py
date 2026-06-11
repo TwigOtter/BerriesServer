@@ -19,6 +19,7 @@ import json
 import logging
 import logging.handlers
 import random
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -29,11 +30,12 @@ import discord
 import httpx
 import uvicorn
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from fastapi import FastAPI, Header, HTTPException, Request
 
 from shared.chroma_client import get_collection
 from shared.config import (
+    CHUNK_TIMEOUT_SEC,
     CHUNK_TOKEN_LIMIT,
     DISCORD_ANNOUNCE_CHANNEL_ID,
     DISCORD_BERRIES_CHANNEL_WHITELIST_IDS,
@@ -175,7 +177,9 @@ async def _flush_watch_channel(channel_id: int, reason: str) -> None:
     text = "\n".join(e["text"] for e in buf)
     token_count = count_tokens(text)
 
-    try:
+    # The embedding round-trip and Chroma client are synchronous — run them
+    # off the event loop so a slow embed doesn't stall the bot's heartbeat.
+    def _chroma_add() -> None:
         collection = get_collection()
         collection.add(
             documents=[text],
@@ -191,12 +195,21 @@ async def _flush_watch_channel(channel_id: int, reason: str) -> None:
                 "token_count": token_count,
             }],
         )
+
+    try:
+        await asyncio.to_thread(_chroma_add)
         log.info(
             "Flushed watch channel #%s (%s): %d entries, %d tokens, reason=%s",
             channel_name, channel_id, len(buf), token_count, reason,
         )
     except Exception:
         log.exception("Failed to embed watch channel chunk for channel %s", channel_id)
+
+    # On a timeout flush there's no conversation to carry context into — and
+    # keeping stale entries would make the flush timer re-flush them forever.
+    if reason == "timeout":
+        _watch_buffers[channel_id] = []
+        return
 
     # Keep last DISCORD_CHUNK_OVERLAP_MESSAGES entries as seed for next chunk,
     # but trim from the front if the overlap itself already exceeds the token limit.
@@ -209,6 +222,19 @@ async def _flush_watch_channel(channel_id: int, reason: str) -> None:
         overlap = []
     _watch_buffers[channel_id] = overlap
 
+
+@tasks.loop(seconds=10)
+async def _watch_flush_timer() -> None:
+    """Flush watch buffers whose newest entry is older than CHUNK_TIMEOUT_SEC.
+
+    Without this, a quiet channel's tail conversation sits in memory
+    indefinitely and is lost on restart — only the token-limit flush in
+    on_message would ever fire.
+    """
+    now = time.time()
+    for channel_id, buf in list(_watch_buffers.items()):
+        if buf and (now - buf[-1]["timestamp"]) >= CHUNK_TIMEOUT_SEC:
+            await _flush_watch_channel(channel_id, reason="timeout")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -370,6 +396,8 @@ async def on_ready() -> None:
         log.info("Synced %d slash command(s)", len(synced))
     except Exception:
         log.exception("Failed to sync slash commands")
+    if not _watch_flush_timer.is_running():
+        _watch_flush_timer.start()
 
 
 @bot.tree.error
@@ -472,7 +500,6 @@ async def on_message(message: discord.Message) -> None:
                 display_name=message.author.display_name,
                 discord_id=str(message.author.id),
                 channel_history=history,
-                created_at=message.created_at,
             )
             log.debug("LLM response for on_message: %.120r", response)
 

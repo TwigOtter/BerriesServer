@@ -71,4 +71,4 @@ Copy `.env.example` to `.env`. Key variables:
 
 ## Test Suite
 
-- `python pytest` (only works on Linux machine, not in dev environment)
+- `python -m pytest` (only works on Linux machine, not in dev environment)

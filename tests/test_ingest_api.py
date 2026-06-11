@@ -35,6 +35,10 @@ async def client(mock_collection, tmp_path):
     Resets module-level buffer state between tests.
     """
     patches = [
+        # tiktoken downloads its encoding file on first use — stub the counter
+        # so tests run without network access. ~4 chars/token is close enough
+        # for buffer-limit behaviour.
+        patch("shared.tokenizer.count_tokens", new=lambda text: len(text) // 4),
         patch("shared.ask_berries.get_completion", new=AsyncMock(return_value="spooky test response")),
         patch("shared.ask_berries.rewrite_queries", new=AsyncMock(return_value=["test query"])),
         patch("ingest_api.main.get_collection", return_value=mock_collection),
@@ -42,6 +46,7 @@ async def client(mock_collection, tmp_path):
         patch("ingest_api.main._post_to_streamerbot", new=AsyncMock()),
         patch("shared.user_db.init_db"),
         patch("shared.user_db.upsert_user"),
+        patch("shared.user_db.get_user", return_value=None),
         patch("shared.ask_berries.log_interaction"),
         patch("shared.chroma_client.log_retrieval"),
         patch("ingest_api.main.USERS_DB_PATH", tmp_path / "users.db"),

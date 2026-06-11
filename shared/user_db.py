@@ -38,11 +38,14 @@ Schema
 """
 
 import json
+import logging
 import sqlite3
 import uuid
 from datetime import datetime, timezone
 
 from shared.config import USERS_DB_PATH
+
+log = logging.getLogger(__name__)
 
 
 def _connect() -> sqlite3.Connection:
@@ -164,9 +167,9 @@ def upsert_user(
                 past_logins = json.loads(row["t_past_logins"])
                 old_login = row["t_login"]
                 if old_login != t_login:
-                    print(
-                        f"[user_db] Twitch login changed for t_id={t_id}: "
-                        f"{old_login!r} → {t_login!r}"
+                    log.info(
+                        "Twitch login changed for t_id=%s: %r → %r",
+                        t_id, old_login, t_login,
                     )
                     if old_login not in past_logins:
                         past_logins.append(old_login)
