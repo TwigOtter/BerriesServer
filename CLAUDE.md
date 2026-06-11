@@ -45,10 +45,11 @@ Streamer.bot → ingest_api (8000) → ChromaDB + SQLite + JSONL transcripts
 - **`berries_bot/`** — Config/assets only. `personality.txt` is the character prompt loaded by `shared/ask_berries.py`.
 
 ### Shared Libraries (`shared/`)
-- `ask_berries.py` — LLM hub; all response pipelines live here (nickname lookup, ChromaDB, prompt assembly, logging).
+- `ask_berries.py` — LLM hub; all response pipelines live here (nickname lookup, retrieval, prompt assembly, logging).
+- `retrieval.py` — RAG retrieval stage: query rewriting → multi-query vector search → assist-model reranking (with abstain) → retrieval logging.
 - `prompt_builder.py` — Assembles system prompts from personality + context formatters + per-ContextType instructions.
 - `config.py` — All config from `.env`; every service imports from here.
-- `llm_client.py` — Async abstraction over Anthropic API or Ollama (swapped via `LLM_BACKEND` env var); includes query rewriter.
+- `llm_client.py` — Async abstraction over Anthropic API or Ollama (swapped via `LLM_BACKEND` env var).
 - `chroma_client.py` — Singleton ChromaDB client using local `nomic-ai/nomic-embed-text-v1` embeddings (8192-token limit, requires `einops`).
 - `user_db.py` / `movie_db.py` — SQLite wrappers for user profiles and movie suggestions/history.
 
@@ -60,6 +61,7 @@ Copy `.env.example` to `.env`. Key variables:
 - `DISCORD_TOKEN`, `DISCORD_BERRIES_CHANNEL_WHITELIST_IDS`, `DISCORD_ANNOUNCE_CHANNEL_ID`
 - `INGEST_SECRET` — shared auth header between services
 - `CHUNK_TOKEN_LIMIT=480`, `CHUNK_TIMEOUT_SEC=300`, `CHROMA_N_RESULTS=4`
+- `RERANK_ENABLED=true`, `RERANK_CANDIDATES=12`, `RERANK_MIN_SCORE=5` — assist-model reranking of retrieval candidates (`shared/retrieval.py`); measure with `python scripts/eval_retrieval.py`
 
 ## Key Design Decisions
 

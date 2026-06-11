@@ -6,10 +6,10 @@ The FastAPI app is tested in-process via httpx.AsyncClient — no server needed.
 
 Mocked dependencies:
   - shared.ask_berries.get_completion   — avoids real API calls (patched where used)
-  - shared.ask_berries.rewrite_queries  — avoids rewriter LLM calls
+  - shared.retrieval.rewrite_queries / get_completion — avoids rewriter/reranker LLM calls
   - ingest_api.main.get_collection      — avoids real ChromaDB
   - ingest_api.main._post_to_streamerbot — avoids real Streamer.bot HTTP
-  - shared.user_db.init_db / upsert_user — avoids touching data/users.db
+  - shared.user_db.init_db / upsert_user / get_user — avoids touching data/users.db
 """
 
 import pytest
@@ -40,7 +40,9 @@ async def client(mock_collection, tmp_path):
         # for buffer-limit behaviour.
         patch("shared.tokenizer.count_tokens", new=lambda text: len(text) // 4),
         patch("shared.ask_berries.get_completion", new=AsyncMock(return_value="spooky test response")),
-        patch("shared.ask_berries.rewrite_queries", new=AsyncMock(return_value=["test query"])),
+        patch("shared.retrieval.rewrite_queries", new=AsyncMock(return_value=["test query"])),
+        # Reranker scores every candidate 10 so retrieved docs pass through.
+        patch("shared.retrieval.get_completion", new=AsyncMock(return_value='{"0": 10}')),
         patch("ingest_api.main.get_collection", return_value=mock_collection),
         patch("shared.chroma_client.get_collection", return_value=mock_collection),
         patch("ingest_api.main._post_to_streamerbot", new=AsyncMock()),
@@ -48,7 +50,7 @@ async def client(mock_collection, tmp_path):
         patch("shared.user_db.upsert_user"),
         patch("shared.user_db.get_user", return_value=None),
         patch("shared.ask_berries.log_interaction"),
-        patch("shared.chroma_client.log_retrieval"),
+        patch("shared.retrieval.log_retrieval"),
         patch("ingest_api.main.USERS_DB_PATH", tmp_path / "users.db"),
         patch("ingest_api.main.TRANSCRIPTS_DIR", tmp_path / "transcripts"),
         patch("ingest_api.main.INGEST_SECRET", ""),

@@ -4,8 +4,8 @@ shared/ask_berries.py
 Central hub for all Berries LLM interactions.
 
 All pathways that result in a Berries response go through one of the ask_berries_*
-functions here. Lower-level plumbing (get_completion, rewrite_queries, ChromaDB) is
-consumed from shared/ but never called directly by service code.
+functions here. Lower-level plumbing (get_completion, retrieve_context, ChromaDB)
+is consumed from shared/ but never called directly by service code.
 
 Public API:
     ask_berries()                   — raw LLM call, no logging
@@ -15,13 +15,12 @@ Public API:
     ask_berries_twitch_going_live() — going-live announcement + gif query (Twig-directed)
 """
 
-import asyncio
 import logging
 import re
 
 from shared.config import PERSONALITY_FILE
-from shared.llm_client import get_completion, rewrite_queries
-from shared.chroma_client import query_chroma_multi
+from shared.llm_client import get_completion
+from shared.retrieval import retrieve_context
 from shared.prompt_builder import (
     ContextType,
     build_system_prompt,
@@ -56,29 +55,6 @@ def _get_nickname_discord(discord_id: str, display_name: str) -> str:
     t_login = get_twitch_link(discord_id)
     db_user = get_user(t_login) if t_login else get_user_by_discord(discord_id)
     return (db_user.get("nickname") or display_name) if db_user else display_name
-
-
-async def _chroma_context(
-    query: str,
-    recent_context: str,
-    username: str,
-) -> tuple[list[tuple[str, dict]], list[str]]:
-    """
-    Run query rewriting + ChromaDB retrieval.
-    Returns (docs, queries_used). docs is empty on failure.
-    rewrite_queries always returns a non-empty list now, so docs is never empty
-    for pure retrieval reasons — only for no-match results from ChromaDB.
-    """
-    try:
-        search_queries = await rewrite_queries(query, recent_context, username)
-        # query_chroma_multi blocks on a synchronous embedding HTTP call —
-        # run it off the event loop so the bot stays responsive.
-        docs = await asyncio.to_thread(query_chroma_multi, search_queries)
-        log.debug("ChromaDB returned %d doc(s) for %d rewritten query/queries", len(docs), len(search_queries))
-        return docs, search_queries
-    except Exception:
-        log.exception("ChromaDB query/rewrite failed (no context injected)")
-        return [], []
 
 
 def cleanup_response(text: str) -> str:
@@ -154,7 +130,7 @@ async def ask_berries_twitch(
     context_parts: list[str] = []
 
     # Long-term memory: semantically relevant past chunks via ChromaDB
-    docs, search_queries = await _chroma_context(
+    docs, search_queries = await retrieve_context(
         query,
         recent_context=recent_buffer_text,
         username=username or "a viewer",
@@ -214,7 +190,7 @@ async def ask_berries_discord_mention(
     user_message = f"{nickname} said: {query}"
 
     # Long-term memory via ChromaDB (use channel_history as recent_context for query rewriting)
-    docs, search_queries = await _chroma_context(
+    docs, search_queries = await retrieve_context(
         query,
         recent_context=channel_history,
         username=display_name,

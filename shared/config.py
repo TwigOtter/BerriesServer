@@ -33,6 +33,14 @@ CHUNK_OVERLAP_SEC = int(os.getenv("CHUNK_OVERLAP_SEC", "30"))    # keep last 30s
 CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "stream_transcripts")
 CHROMA_N_RESULTS = int(os.getenv("CHROMA_N_RESULTS", "4"))       # chunks to retrieve per query
 CHROMA_L2_THRESHOLD = float(os.getenv("CHROMA_L2_THRESHOLD", "0.8"))  # discard chunks with L2 distance above this
+
+# ── Retrieval reranking ────────────────────────────────────────────────────
+# After vector search, the assist model scores candidates for relevance to the
+# actual message and only chunks scoring >= RERANK_MIN_SCORE are injected
+# (possibly none). See shared/retrieval.py.
+RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() in ("1", "true", "yes")
+RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "12"))    # vector hits fed to the reranker
+RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "5"))     # 0-10; below this a chunk is dropped
 # Address of the chroma-server.service (see deploy/chroma-server.service).
 CHROMA_HOST = os.getenv("CHROMA_HOST", "127.0.0.1")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8001"))

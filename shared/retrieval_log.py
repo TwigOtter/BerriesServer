@@ -9,8 +9,9 @@ Schema:
     "<original user query>": ["chunk text 1", "chunk text 2", ...]
   }
 
-Keys are the original user queries that triggered a ChromaDB lookup.
-Values are up to 4 raw chunk texts returned for that query.
+Keys are the original user messages that triggered a ChromaDB lookup.
+Values are the raw chunk texts that were actually injected into the prompt
+(post-reranking — see shared/retrieval.py).
 
 On key collision, the most recent retrieval overwrites — most recent L2 matches
 are the best matches, so newer results are preferred.
