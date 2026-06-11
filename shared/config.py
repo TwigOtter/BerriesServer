@@ -95,6 +95,17 @@ DISCORD_STICKERS_ONLY_CHANNEL_IDS: list[int] = [
 _rules_sticker_id = os.getenv("DISCORD_RULES_STICKER_ID", "")
 DISCORD_RULES_STICKER_ID: int | None = int(_rules_sticker_id) if _rules_sticker_id else None
 
+# ── Agent tools (experimental) ─────────────────────────────────────────────
+# When enabled, Discord @mention responses run a tool-use loop (Anthropic
+# backend only): the model can search memories, read the server rules, look up
+# user profiles, and ping moderators. See shared/agent.py and docs/agent-tools.md.
+AGENT_TOOLS_ENABLED = os.getenv("AGENT_TOOLS_ENABLED", "false").lower() in ("1", "true", "yes")
+AGENT_MAX_TOOL_ITERATIONS = int(os.getenv("AGENT_MAX_TOOL_ITERATIONS", "3"))
+_mod_ping_id = os.getenv("DISCORD_MOD_PING_CHANNEL_ID", "")
+DISCORD_MOD_PING_CHANNEL_ID: int | None = int(_mod_ping_id) if _mod_ping_id else None
+MOD_PING_COOLDOWN_SEC = int(os.getenv("MOD_PING_COOLDOWN_SEC", "600"))
+SERVER_RULES_FILE = BASE_DIR / "berries_bot" / "lore" / "server-rules.md"
+
 # ── OMDb API ───────────────────────────────────────────────────────────────
 OMDB_API_KEY = os.getenv("OMDB_API_KEY", "")
 

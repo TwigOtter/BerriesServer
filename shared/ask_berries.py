@@ -19,7 +19,7 @@ import asyncio
 import logging
 import re
 
-from shared.config import PERSONALITY_FILE
+from shared.config import AGENT_TOOLS_ENABLED, PERSONALITY_FILE
 from shared.context_providers import (
     BerriesRequest,
     ChannelHistoryProvider,
@@ -198,7 +198,14 @@ async def ask_berries_discord_mention(
     system_prompt = build_system_prompt(_load_personality(), ContextType.DISCORD_MENTION, context)
 
     log.debug("ask_berries_discord_mention — user_message: %.120r", user_message)
-    response = await ask_berries(system_prompt=system_prompt, user_message=user_message, max_tokens=600)
+    response = None
+    if AGENT_TOOLS_ENABLED:
+        # Experimental tool-use loop (search_memories, get_server_rules, ...).
+        # Falls back to the plain single-shot call below if unavailable.
+        from shared.agent import run_tool_loop
+        response = await run_tool_loop(system_prompt=system_prompt, user_message=user_message, max_tokens=600)
+    if response is None:
+        response = await ask_berries(system_prompt=system_prompt, user_message=user_message, max_tokens=600)
     response = cleanup_response(response) if response else response
     log.debug("ask_berries_discord_mention — response: %.120r", response)
 
