@@ -42,7 +42,7 @@ Streamer.bot → ingest_api (8000) → ChromaDB + SQLite + JSONL transcripts
 ### Services
 - **`ingest_api/`** — Receives all Streamer.bot events; buffers and chunks chat (~480 tokens or 5 min timeout); embeds chunks into ChromaDB; upserts user profiles; calls `ask_berries_twitch()` on mentions.
 - **`discord_bot/`** — `main.py` is a slim entry point that loads feature cogs (`cogs/mention.py`, `cogs/watcher.py`, `cogs/moderation.py`, `cogs/movies.py`, `cogs/profile.py`), the going-live webhook server (`webhook.py`), and OMDb/Giphy clients (`services.py`); calls `ask_berries_discord_mention()` and `ask_berries_twitch_going_live()`.
-- **`berries_bot/`** — Config/assets only. `personality.txt` is the character prompt loaded by `shared/ask_berries.py`.
+- **`berries_bot/`** — Config/assets only. `personality.txt` is the character prompt loaded by `shared/ask_berries.py`. `lore/*.md` holds curated character facts indexed into ChromaDB via `python scripts/reindex_lore.py` (one entry per `## section`, surfaced through normal retrieval).
 
 ### Shared Libraries (`shared/`)
 - `ask_berries.py` — LLM hub; all response pipelines live here (nickname lookup, retrieval, prompt assembly, logging).

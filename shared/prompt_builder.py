@@ -64,6 +64,9 @@ def _chunk_header(meta: dict) -> str:
     if source == "document":
         parts = [p for p in [meta.get("title", ""), meta.get("date", "")] if p]
         return f"[Document: {' - '.join(parts)}]" if parts else "[Document]"
+    if source == "lore":
+        title = meta.get("title", "")
+        return f"[Berries lore: {title}]" if title else "[Berries lore]"
     # Default: twitch stream chunk
     parts = [p for p in [meta.get("stream_date", ""), meta.get("stream_category", "")] if p]
     return f"[Stream: {' - '.join(parts)}]" if parts else "[Stream]"
@@ -74,7 +77,8 @@ def format_chroma_context(docs: list[tuple[str, dict]]) -> str:
     formatted = [f"{_chunk_header(meta)}\n{doc}" for doc, meta in docs]
     return (
         "RELEVANT PAST CONTEXT:\n"
-        "The following excerpts from past stream logs may be relevant to the conversation. "
+        "The following excerpts from past stream logs and your own lore notes may be "
+        "relevant to the conversation. Lore entries are canon facts about you. "
         "Use them to inform your response if helpful — do not quote them directly.\n"
         + "\n---\n".join(formatted)
     )
