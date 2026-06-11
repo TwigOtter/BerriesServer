@@ -15,22 +15,37 @@ Public API:
     ask_berries_twitch_going_live() — going-live announcement + gif query (Twig-directed)
 """
 
+import asyncio
 import logging
 import re
 
 from shared.config import PERSONALITY_FILE
-from shared.llm_client import get_completion
-from shared.retrieval import retrieve_context
-from shared.prompt_builder import (
-    ContextType,
-    build_system_prompt,
-    format_chroma_context,
-    format_recent_chunks,
-    format_user_context,
+from shared.context_providers import (
+    BerriesRequest,
+    ChannelHistoryProvider,
+    ChromaContextProvider,
+    RecentChunksProvider,
+    UserProfileProvider,
+    build_context,
 )
+from shared.llm_client import get_completion
+from shared.prompt_builder import ContextType, build_system_prompt
 from shared.interaction_log import log_interaction
 
 log = logging.getLogger(__name__)
+
+# Context blocks per platform, in prompt order. Adding a new context source
+# (lore, server rules, ...) means adding a provider here, not a new pipeline.
+_TWITCH_PROVIDERS = [
+    ChromaContextProvider(),
+    UserProfileProvider(),
+    RecentChunksProvider(),
+]
+_DISCORD_MENTION_PROVIDERS = [
+    ChromaContextProvider(),
+    UserProfileProvider(),
+    ChannelHistoryProvider(),
+]
 
 
 # ── Internal helpers ─────────────────────────────────────────────────────────
@@ -117,7 +132,7 @@ async def ask_berries_twitch(
         recent_chunks:      Deque of recently flushed chunks for short-term memory context.
         recent_buffer_text: Last N in-progress buffer entries for query rewriting context.
     """
-    nickname = _get_nickname_twitch(username) if username else ""
+    nickname = await asyncio.to_thread(_get_nickname_twitch, username) if username else ""
     if username and nickname:
         user_message = (
             f"A viewer named {nickname} (username: {username}, call them '{nickname}') "
@@ -127,35 +142,17 @@ async def ask_berries_twitch(
         user_message = query
 
     context_type = ContextType.TWITCH_TTS if tts else ContextType.TWITCH_CHAT
-    context_parts: list[str] = []
 
-    # Long-term memory: semantically relevant past chunks via ChromaDB
-    docs, search_queries = await retrieve_context(
-        query,
+    req = BerriesRequest(
+        query=query,
+        display_name=nickname or username or "a viewer",
+        t_login=username or None,
         recent_context=recent_buffer_text,
-        username=username or "a viewer",
+        recent_chunks=[c["text"] for c in recent_chunks],
     )
-    if docs:
-        context_parts.append(format_chroma_context(docs))
+    context = await build_context(_TWITCH_PROVIDERS, req)
 
-    # User profile: nickname, species, local time, about blurb
-    if username:
-        from shared.user_db import get_user
-        user_profile = get_user(username)
-        if user_profile:
-            user_ctx = format_user_context(user_profile, username)
-            if user_ctx:
-                context_parts.append(user_ctx)
-
-    # Short-term memory: last N flushed chunks from this session
-    if recent_chunks:
-        context_parts.append(format_recent_chunks([c["text"] for c in recent_chunks]))
-
-    system_prompt = build_system_prompt(
-        _load_personality(),
-        context_type,
-        "\n\n".join(context_parts),
-    )
+    system_prompt = build_system_prompt(_load_personality(), context_type, context)
     response = await ask_berries(system_prompt=system_prompt, user_message=user_message, max_tokens=80)
 
     if username and response:
@@ -186,25 +183,19 @@ async def ask_berries_discord_mention(
         discord_id:      Discord user ID string; used for nickname lookup in user_db.
         channel_history: Pre-fetched formatted channel history string (from _get_channel_history).
     """
-    nickname = _get_nickname_discord(discord_id, display_name)
+    nickname = await asyncio.to_thread(_get_nickname_discord, discord_id, display_name)
     user_message = f"{nickname} said: {query}"
 
-    # Long-term memory via ChromaDB (use channel_history as recent_context for query rewriting)
-    docs, search_queries = await retrieve_context(
-        query,
+    req = BerriesRequest(
+        query=query,
+        display_name=display_name,
+        discord_id=discord_id,
+        # channel_history doubles as recency context for query rewriting
         recent_context=channel_history,
-        username=display_name,
+        channel_history=channel_history,
     )
-    chroma_block = format_chroma_context(docs) if docs else ""
-
-    # User profile: nickname, species, local time, about blurb
-    from shared.user_db import get_user_by_discord, get_twitch_link, get_user
-    _t_login = get_twitch_link(discord_id)
-    _db_user = get_user(_t_login) if _t_login else get_user_by_discord(discord_id)
-    user_profile_block = format_user_context(_db_user, display_name) if _db_user else ""
-
-    system_suffix = "\n\n".join(filter(None, [chroma_block, user_profile_block, channel_history]))
-    system_prompt = build_system_prompt(_load_personality(), ContextType.DISCORD_MENTION, system_suffix)
+    context = await build_context(_DISCORD_MENTION_PROVIDERS, req)
+    system_prompt = build_system_prompt(_load_personality(), ContextType.DISCORD_MENTION, context)
 
     log.debug("ask_berries_discord_mention — user_message: %.120r", user_message)
     response = await ask_berries(system_prompt=system_prompt, user_message=user_message, max_tokens=600)
@@ -212,7 +203,8 @@ async def ask_berries_discord_mention(
     log.debug("ask_berries_discord_mention — response: %.120r", response)
 
     if response:
-        user_key = get_twitch_link(discord_id) or discord_id
+        from shared.user_db import get_twitch_link
+        user_key = await asyncio.to_thread(get_twitch_link, discord_id) or discord_id
         log_interaction(
             user_key=user_key,
             nickname=nickname,
