@@ -7,9 +7,17 @@ All services import from here — never hardcode secrets or paths.
 
 import os
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# ── Timezone ───────────────────────────────────────────────────────────────
+# Calendar-date keying (daily interaction/retrieval logs, dream's "yesterday",
+# stream_date labels, transcript filenames) uses this timezone so a "day"
+# matches Twig's day, not UTC's. Absolute timestamps stay UTC ISO instants.
+LOCAL_TIMEZONE = os.getenv("LOCAL_TIMEZONE", "America/Chicago")
+LOCAL_TZ = ZoneInfo(LOCAL_TIMEZONE)
 
 # ── Paths ──────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent.parent

@@ -41,6 +41,7 @@ from shared.config import (
     CHUNK_TOKEN_LIMIT,
     DISCORD_BOT_WEBHOOK_URL,
     INGEST_SECRET,
+    LOCAL_TZ,
     STREAMERBOT_CALLBACK_URL,
     STREAMERBOT_RESPONSE_ACTION_ID,
     TRANSCRIPTS_DIR,
@@ -164,7 +165,9 @@ async def _flush_buffer(reason: str) -> None:
         return
 
     now = datetime.now(timezone.utc)
-    stream_date = now.strftime("%Y-%m-%d")
+    # Calendar-day label (and transcript filename) in local time so an evening
+    # stream isn't split across two dates; timestamps below stay UTC instants.
+    stream_date = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
     chunk_id = f"{now.strftime('%Y-%m-%dT%H-%M-%S')}_{uuid.uuid4().hex[:6]}"
 
     start_ts = datetime.fromtimestamp(_buffer[0]["timestamp"], tz=timezone.utc).isoformat()

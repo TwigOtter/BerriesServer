@@ -1,22 +1,27 @@
 """
 scripts/dream.py
 
-Berries' nightly dreaming phase — runs at 3am via systemd timer.
+Berries' nightly dreaming phase — runs at 3am local time (LOCAL_TIMEZONE)
+via systemd timer (deploy/berries-dream.timer).
+
+All dates are local-time calendar days, matching how the daily logs are keyed.
+Each run processes EVERY unarchived day file older than today, not just
+yesterday's — so missed runs (server down at 3am) catch up automatically.
 
 Phases:
   1. User memory consolidation
-     - Reads today's daily interaction log (logs/daily_interactions/YYYY-MM-DD.json)
+     - Reads each unarchived daily interaction log (logs/daily_interactions/YYYY-MM-DD.json)
      - For each user with new activity, asks the LLM to update their `about` blurb
      - Writes updated blurbs back to users.db
      - Archives the processed log file to logs/daily_interactions/archive/
 
   2. Birthday check
-     - Finds all users whose birthday (MM-DD) matches today
+     - Finds all users whose birthday (MM-DD) matches today (local)
      - Generates a personalized birthday message from Berries for each
      - Posts to the Berries chat channel (so users can respond, not put on a pedestal)
 
   3. RAG summarization (LLM step only)
-     - Reads today's retrieval log (logs/daily_interactions/YYYY-MM-DD_retrievals.json)
+     - Reads each unarchived retrieval log (logs/daily_interactions/YYYY-MM-DD_retrievals.json)
      - For each (query → chunks) entry, distills factual content via LLM
      - Persists summaries to logs/daily_interactions/pending/YYYY-MM-DD_pending_summaries.json
      - Archives the processed retrieval log
@@ -24,7 +29,8 @@ Phases:
        step entirely — Phase 4 can retry the upsert without re-spending tokens
 
   4. Summary upsert
-     - Reads the pending summaries file produced by Phase 3
+     - Reads every pending summaries file produced by Phase 3 (including ones
+       left behind by earlier failed runs)
      - Upserts all summaries to ChromaDB as source:summary entries
      - On success, deletes the pending file
      - On failure, leaves the pending file in place so the next run can retry
@@ -38,10 +44,11 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 
 # Dump Python-level traceback to stderr on SIGSEGV — captured by journald.
@@ -67,6 +74,7 @@ from shared.config import (
     ANTHROPIC_CHAT_MODEL,
     DISCORD_BERRIES_CHAT_CHANNEL_ID,
     DISCORD_TOKEN,
+    LOCAL_TZ,
     LOGS_DIR,
 )
 from shared.llm_client import get_completion
@@ -88,6 +96,34 @@ log = logging.getLogger("dream")
 _INTERACTIONS_DIR = LOGS_DIR / "daily_interactions"
 _ARCHIVE_DIR = _INTERACTIONS_DIR / "archive"
 _PENDING_DIR = _INTERACTIONS_DIR / "pending"
+
+_INTERACTION_FILE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})\.json")
+_RETRIEVAL_FILE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})_retrievals\.json")
+
+
+def _unarchived_dates(today_str: str) -> tuple[list[str], list[str]]:
+    """
+    Scan logs/daily_interactions/ for unprocessed day files strictly older
+    than `today_str` (today's file is still being written to).
+
+    Returns (interaction_dates, retrieval_dates), each sorted ascending.
+    Processing everything left behind — instead of exactly yesterday — means
+    missed runs catch up automatically on the next night.
+    """
+    interaction_dates: list[str] = []
+    retrieval_dates: list[str] = []
+    if not _INTERACTIONS_DIR.exists():
+        return interaction_dates, retrieval_dates
+    for path in sorted(_INTERACTIONS_DIR.iterdir()):
+        if not path.is_file():
+            continue
+        if m := _INTERACTION_FILE_RE.fullmatch(path.name):
+            if m.group(1) < today_str:
+                interaction_dates.append(m.group(1))
+        elif m := _RETRIEVAL_FILE_RE.fullmatch(path.name):
+            if m.group(1) < today_str:
+                retrieval_dates.append(m.group(1))
+    return interaction_dates, retrieval_dates
 
 
 # ── Phase 1: User memory consolidation ───────────────────────────────────────
@@ -469,36 +505,46 @@ def phase_upsert_summaries(pending_path: Path) -> int:
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-async def main() -> Path | None:
-    now = datetime.now(timezone.utc)
-    # At 3am UTC we're consolidating the previous calendar day's interactions.
-    date_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
-    log.info("Dreaming started at %s (processing %s)", now.isoformat(), date_str)
+async def main() -> None:
+    # The timer fires at 3am local time (deploy/berries-dream.timer), and the
+    # daily logs are keyed by local date — so "everything older than today"
+    # is exactly the finished days, including last evening's stream/Discord chat.
+    now_local = datetime.now(LOCAL_TZ)
+    today_str = now_local.strftime("%Y-%m-%d")
+    interaction_dates, retrieval_dates = _unarchived_dates(today_str)
+    log.info(
+        "Dreaming started at %s — interaction day(s): %s; retrieval day(s): %s",
+        now_local.isoformat(),
+        ", ".join(interaction_dates) or "none",
+        ", ".join(retrieval_dates) or "none",
+    )
 
-    user_count = await phase_user_memory(date_str)
-    log.info("Phase 1 complete: %d user about blurb(s) updated", user_count)
+    for date_str in interaction_dates:
+        user_count = await phase_user_memory(date_str)
+        log.info("Phase 1 (%s) complete: %d user about blurb(s) updated", date_str, user_count)
 
-    birthday_count = await phase_birthdays(now)
+    birthday_count = await phase_birthdays(now_local)
     log.info("Phase 2 complete: %d birthday message(s) posted", birthday_count)
 
-    pending_path = await phase_rag_summarization(date_str)
-    if pending_path:
-        log.info("Phase 3 complete: pending summaries staged at %s", pending_path)
-    else:
-        log.info("Phase 3 complete: nothing to summarise")
-
-    return pending_path
+    for date_str in retrieval_dates:
+        pending_path = await phase_rag_summarization(date_str)
+        if pending_path:
+            log.info("Phase 3 (%s) complete: pending summaries staged at %s", date_str, pending_path)
+        else:
+            log.info("Phase 3 (%s) complete: nothing to summarise", date_str)
 
 
 if __name__ == "__main__":
     # Phases 1, 2, and 3 (LLM calls) run inside asyncio.
     # Phase 4 spawns a subprocess for the ChromaDB upsert — see phase_upsert_summaries.
-    pending_path = asyncio.run(main())
+    asyncio.run(main())
 
-    if pending_path and pending_path.exists():
+    # Upsert every pending file, including any left behind by earlier failed runs.
+    pending_files = sorted(_PENDING_DIR.glob("*_pending_summaries.json")) if _PENDING_DIR.exists() else []
+    if not pending_files:
+        log.info("Phase 4: no pending summaries files — skipping")
+    for pending_path in pending_files:
         phase_upsert_summaries(pending_path)
-    else:
-        log.info("Phase 4: no pending summaries file — skipping")
 
     log.info("Dreaming complete.")
     os._exit(0)
