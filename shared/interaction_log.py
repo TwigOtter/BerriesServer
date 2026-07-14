@@ -1,7 +1,10 @@
 """
 shared/interaction_log.py
 
-Daily interaction log — one JSON file per calendar day.
+Daily interaction log — one JSON file per calendar day (local time, see
+LOCAL_TIMEZONE in shared/config.py). Twig streams in the evening, so keying
+by UTC would split every stream across two files and delay the dreaming
+consolidation by a day.
 
 File: logs/daily_interactions/YYYY-MM-DD.json
 Schema:
@@ -22,16 +25,16 @@ service instances (ingest + discord) don't clobber each other.
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
-from shared.config import LOGS_DIR
+from shared.config import LOCAL_TZ, LOGS_DIR
 
 _INTERACTIONS_DIR = LOGS_DIR / "daily_interactions"
 
 
 def _today_path() -> Path:
-    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    date_str = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
     _INTERACTIONS_DIR.mkdir(parents=True, exist_ok=True)
     return _INTERACTIONS_DIR / f"{date_str}.json"
 

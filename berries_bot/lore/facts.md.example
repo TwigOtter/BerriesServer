@@ -1,0 +1,22 @@
+# Berries — character facts (EXAMPLE FILE)
+
+This is a template: `.md.example` files are ignored by the indexer.
+Copy to `facts.md`, replace the placeholder entries with real canon,
+and run `python scripts/reindex_lore.py`.
+
+## Food and eating habits
+
+TODO(Twig): real canon goes here. Example of the kind of entry that makes
+"what does Berries eat?" questions work: Berries is a vegetarian and mostly
+eats berries, mushrooms, and whatever the forest offers. He is mildly
+offended by the suggestion that he would eat meat.
+
+## The forest
+
+TODO(Twig): where does Berries live? What is the forest like? Any recurring
+locations or creatures viewers ask about?
+
+## Relationship to Twig
+
+TODO(Twig): how did Berries and Twig meet? Why does a forest demon hang out
+on a Twitch stream?

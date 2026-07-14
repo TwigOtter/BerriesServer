@@ -1,7 +1,8 @@
 """
 shared/retrieval_log.py
 
-Daily retrieval log — one JSON file per calendar day.
+Daily retrieval log — one JSON file per calendar day (local time, see
+LOCAL_TIMEZONE in shared/config.py; same reasoning as interaction_log.py).
 
 File: logs/daily_interactions/YYYY-MM-DD_retrievals.json
 Schema:
@@ -9,8 +10,9 @@ Schema:
     "<original user query>": ["chunk text 1", "chunk text 2", ...]
   }
 
-Keys are the original user queries that triggered a ChromaDB lookup.
-Values are up to 4 raw chunk texts returned for that query.
+Keys are the original user messages that triggered a ChromaDB lookup.
+Values are the raw chunk texts that were actually injected into the prompt
+(post-reranking — see shared/retrieval.py).
 
 On key collision, the most recent retrieval overwrites — most recent L2 matches
 are the best matches, so newer results are preferred.
@@ -23,17 +25,17 @@ Thread safety: same file-lock pattern as interaction_log.py.
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
-from shared.config import LOGS_DIR
+from shared.config import LOCAL_TZ, LOGS_DIR
 
 _INTERACTIONS_DIR = LOGS_DIR / "daily_interactions"
 _MAX_CHUNKS = 4
 
 
 def _today_path() -> Path:
-    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    date_str = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
     _INTERACTIONS_DIR.mkdir(parents=True, exist_ok=True)
     return _INTERACTIONS_DIR / f"{date_str}_retrievals.json"
 

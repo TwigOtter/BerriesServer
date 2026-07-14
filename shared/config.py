@@ -7,9 +7,17 @@ All services import from here — never hardcode secrets or paths.
 
 import os
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# ── Timezone ───────────────────────────────────────────────────────────────
+# Calendar-date keying (daily interaction/retrieval logs, dream's "yesterday",
+# stream_date labels, transcript filenames) uses this timezone so a "day"
+# matches Twig's day, not UTC's. Absolute timestamps stay UTC ISO instants.
+LOCAL_TIMEZONE = os.getenv("LOCAL_TIMEZONE", "America/Chicago")
+LOCAL_TZ = ZoneInfo(LOCAL_TIMEZONE)
 
 # ── Paths ──────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -33,6 +41,14 @@ CHUNK_OVERLAP_SEC = int(os.getenv("CHUNK_OVERLAP_SEC", "30"))    # keep last 30s
 CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "stream_transcripts")
 CHROMA_N_RESULTS = int(os.getenv("CHROMA_N_RESULTS", "4"))       # chunks to retrieve per query
 CHROMA_L2_THRESHOLD = float(os.getenv("CHROMA_L2_THRESHOLD", "0.8"))  # discard chunks with L2 distance above this
+
+# ── Retrieval reranking ────────────────────────────────────────────────────
+# After vector search, the assist model scores candidates for relevance to the
+# actual message and only chunks scoring >= RERANK_MIN_SCORE are injected
+# (possibly none). See shared/retrieval.py.
+RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() in ("1", "true", "yes")
+RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "12"))    # vector hits fed to the reranker
+RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "5"))     # 0-10; below this a chunk is dropped
 # Address of the chroma-server.service (see deploy/chroma-server.service).
 CHROMA_HOST = os.getenv("CHROMA_HOST", "127.0.0.1")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8001"))
@@ -86,6 +102,17 @@ DISCORD_STICKERS_ONLY_CHANNEL_IDS: list[int] = [
 ]
 _rules_sticker_id = os.getenv("DISCORD_RULES_STICKER_ID", "")
 DISCORD_RULES_STICKER_ID: int | None = int(_rules_sticker_id) if _rules_sticker_id else None
+
+# ── Agent tools (experimental) ─────────────────────────────────────────────
+# When enabled, Discord @mention responses run a tool-use loop (Anthropic
+# backend only): the model can search memories, read the server rules, look up
+# user profiles, and ping moderators. See shared/agent.py and docs/agent-tools.md.
+AGENT_TOOLS_ENABLED = os.getenv("AGENT_TOOLS_ENABLED", "false").lower() in ("1", "true", "yes")
+AGENT_MAX_TOOL_ITERATIONS = int(os.getenv("AGENT_MAX_TOOL_ITERATIONS", "3"))
+_mod_ping_id = os.getenv("DISCORD_MOD_PING_CHANNEL_ID", "")
+DISCORD_MOD_PING_CHANNEL_ID: int | None = int(_mod_ping_id) if _mod_ping_id else None
+MOD_PING_COOLDOWN_SEC = int(os.getenv("MOD_PING_COOLDOWN_SEC", "600"))
+SERVER_RULES_FILE = BASE_DIR / "berries_bot" / "lore" / "server-rules.md"
 
 # ── OMDb API ───────────────────────────────────────────────────────────────
 OMDB_API_KEY = os.getenv("OMDB_API_KEY", "")

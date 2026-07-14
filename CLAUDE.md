@@ -41,14 +41,15 @@ Streamer.bot → ingest_api (8000) → ChromaDB + SQLite + JSONL transcripts
 
 ### Services
 - **`ingest_api/`** — Receives all Streamer.bot events; buffers and chunks chat (~480 tokens or 5 min timeout); embeds chunks into ChromaDB; upserts user profiles; calls `ask_berries_twitch()` on mentions.
-- **`discord_bot/`** — Handles @mentions with RAG context; slash commands for movie suggestions/history/announcements; receives going-live webhooks; calls `ask_berries_discord_mention()`, `ask_berries_movie_announcement()`, `ask_berries_twitch_going_live()`.
-- **`berries_bot/`** — Config/assets only. `personality.txt` is the character prompt loaded by `shared/ask_berries.py`.
+- **`discord_bot/`** — `main.py` is a slim entry point that loads feature cogs (`cogs/mention.py`, `cogs/watcher.py`, `cogs/moderation.py`, `cogs/movies.py`, `cogs/profile.py`), the going-live webhook server (`webhook.py`), and OMDb/Giphy clients (`services.py`); calls `ask_berries_discord_mention()` and `ask_berries_twitch_going_live()`.
+- **`berries_bot/`** — Config/assets only. `personality.txt` is the character prompt loaded by `shared/ask_berries.py`. `lore/*.md` holds curated character facts indexed into ChromaDB via `python scripts/reindex_lore.py` (one entry per `## section`, surfaced through normal retrieval).
 
 ### Shared Libraries (`shared/`)
-- `ask_berries.py` — LLM hub; all response pipelines live here (nickname lookup, ChromaDB, prompt assembly, logging).
+- `ask_berries.py` — LLM hub; all response pipelines live here (nickname lookup, retrieval, prompt assembly, logging).
+- `retrieval.py` — RAG retrieval stage: query rewriting → multi-query vector search → assist-model reranking (with abstain) → retrieval logging.
 - `prompt_builder.py` — Assembles system prompts from personality + context formatters + per-ContextType instructions.
 - `config.py` — All config from `.env`; every service imports from here.
-- `llm_client.py` — Async abstraction over Anthropic API or Ollama (swapped via `LLM_BACKEND` env var); includes query rewriter.
+- `llm_client.py` — Async abstraction over Anthropic API or Ollama (swapped via `LLM_BACKEND` env var).
 - `chroma_client.py` — Singleton ChromaDB client using local `nomic-ai/nomic-embed-text-v1` embeddings (8192-token limit, requires `einops`).
 - `user_db.py` / `movie_db.py` — SQLite wrappers for user profiles and movie suggestions/history.
 
@@ -59,7 +60,10 @@ Copy `.env.example` to `.env`. Key variables:
 - `ANTHROPIC_API_KEY`, `ANTHROPIC_CHAT_MODEL`, `ANTHROPIC_ASSIST_MODEL` — Claude config (chat: Sonnet 4.6 for personality calls; assist: Haiku 4.5 for query rewriting/utility tasks)
 - `DISCORD_TOKEN`, `DISCORD_BERRIES_CHANNEL_WHITELIST_IDS`, `DISCORD_ANNOUNCE_CHANNEL_ID`
 - `INGEST_SECRET` — shared auth header between services
+- `LOCAL_TIMEZONE` (default `America/Chicago`) — calendar-day keying for daily logs, `stream_date`, transcript filenames, and dream.py's date math; absolute timestamps stay UTC
 - `CHUNK_TOKEN_LIMIT=480`, `CHUNK_TIMEOUT_SEC=300`, `CHROMA_N_RESULTS=4`
+- `RERANK_ENABLED=true`, `RERANK_CANDIDATES=12`, `RERANK_MIN_SCORE=5` — assist-model reranking of retrieval candidates (`shared/retrieval.py`); measure with `python scripts/eval_retrieval.py`
+- `AGENT_TOOLS_ENABLED=false` — experimental tool-use loop for Discord mentions (`shared/agent.py`, `shared/tools.py`); see `docs/agent-tools.md` before enabling
 
 ## Key Design Decisions
 
@@ -71,4 +75,4 @@ Copy `.env.example` to `.env`. Key variables:
 
 ## Test Suite
 
-- `python pytest` (only works on Linux machine, not in dev environment)
+- `python -m pytest` (only works on Linux machine, not in dev environment)

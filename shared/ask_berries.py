@@ -4,43 +4,48 @@ shared/ask_berries.py
 Central hub for all Berries LLM interactions.
 
 All pathways that result in a Berries response go through one of the ask_berries_*
-functions here. Lower-level plumbing (get_completion, rewrite_queries, ChromaDB) is
-consumed from shared/ but never called directly by service code.
+functions here. Lower-level plumbing (get_completion, retrieve_context, ChromaDB)
+is consumed from shared/ but never called directly by service code.
 
 Public API:
     ask_berries()                   — raw LLM call, no logging
     ask_berries_discord()           — one-off Discord response (currently unused, but available for simple replies that don't need the full @mention pipeline)
     ask_berries_twitch()            — full Twitch @mention pipeline (ChromaDB + nickname + log)
     ask_berries_discord_mention()   — full Discord @mention pipeline (ChromaDB + nickname + log)
-    ask_berries_movie_announcement()    — movie night announcement + gif query (Twig-directed)
-    ask_berries_twitch_going_live()     — going-live announcement + gif query (Twig-directed)
+    ask_berries_twitch_going_live() — going-live announcement + gif query (Twig-directed)
 """
 
+import asyncio
 import logging
 import re
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 
-from shared.config import PERSONALITY_FILE
-from shared.llm_client import get_completion, rewrite_queries
-from shared.chroma_client import query_chroma_multi
-from shared.prompt_builder import (
-    ContextType,
-    build_system_prompt,
-    format_chroma_context,
-    format_recent_chunks,
-    format_user_context,
+from shared.config import AGENT_TOOLS_ENABLED, PERSONALITY_FILE
+from shared.context_providers import (
+    BerriesRequest,
+    ChannelHistoryProvider,
+    ChromaContextProvider,
+    RecentChunksProvider,
+    UserProfileProvider,
+    build_context,
 )
+from shared.llm_client import get_completion
+from shared.prompt_builder import ContextType, build_system_prompt
 from shared.interaction_log import log_interaction
 
 log = logging.getLogger(__name__)
 
-# System instruction used when Berries is collaborating with Twig to write content
-# for his Discord community rather than responding to a viewer.
-_TWIG_COLLABORATION_INSTRUCTION = """\
-YOUR CURRENT TASK:
-You are currently assisting Twig in communicating with his Discord community. \
-Your response will be posted verbatim to the server — write for the audience, not back to Twig."""
+# Context blocks per platform, in prompt order. Adding a new context source
+# (lore, server rules, ...) means adding a provider here, not a new pipeline.
+_TWITCH_PROVIDERS = [
+    ChromaContextProvider(),
+    UserProfileProvider(),
+    RecentChunksProvider(),
+]
+_DISCORD_MENTION_PROVIDERS = [
+    ChromaContextProvider(),
+    UserProfileProvider(),
+    ChannelHistoryProvider(),
+]
 
 
 # ── Internal helpers ─────────────────────────────────────────────────────────
@@ -65,27 +70,6 @@ def _get_nickname_discord(discord_id: str, display_name: str) -> str:
     t_login = get_twitch_link(discord_id)
     db_user = get_user(t_login) if t_login else get_user_by_discord(discord_id)
     return (db_user.get("nickname") or display_name) if db_user else display_name
-
-
-async def _chroma_context(
-    query: str,
-    recent_context: str,
-    username: str,
-) -> tuple[list[tuple[str, dict]], list[str]]:
-    """
-    Run query rewriting + ChromaDB retrieval.
-    Returns (docs, queries_used). docs is empty on failure.
-    rewrite_queries always returns a non-empty list now, so docs is never empty
-    for pure retrieval reasons — only for no-match results from ChromaDB.
-    """
-    try:
-        search_queries = await rewrite_queries(query, recent_context, username)
-        docs = query_chroma_multi(search_queries)
-        log.debug("ChromaDB returned %d doc(s) for %d rewritten query/queries", len(docs), len(search_queries))
-        return docs, search_queries
-    except Exception:
-        log.exception("ChromaDB query/rewrite failed (no context injected)")
-        return [], []
 
 
 def cleanup_response(text: str) -> str:
@@ -148,7 +132,7 @@ async def ask_berries_twitch(
         recent_chunks:      Deque of recently flushed chunks for short-term memory context.
         recent_buffer_text: Last N in-progress buffer entries for query rewriting context.
     """
-    nickname = _get_nickname_twitch(username) if username else ""
+    nickname = await asyncio.to_thread(_get_nickname_twitch, username) if username else ""
     if username and nickname:
         user_message = (
             f"A viewer named {nickname} (username: {username}, call them '{nickname}') "
@@ -158,35 +142,17 @@ async def ask_berries_twitch(
         user_message = query
 
     context_type = ContextType.TWITCH_TTS if tts else ContextType.TWITCH_CHAT
-    context_parts: list[str] = []
 
-    # Long-term memory: semantically relevant past chunks via ChromaDB
-    docs, search_queries = await _chroma_context(
-        query,
+    req = BerriesRequest(
+        query=query,
+        display_name=nickname or username or "a viewer",
+        t_login=username or None,
         recent_context=recent_buffer_text,
-        username=username or "a viewer",
+        recent_chunks=[c["text"] for c in recent_chunks],
     )
-    if docs:
-        context_parts.append(format_chroma_context(docs))
+    context = await build_context(_TWITCH_PROVIDERS, req)
 
-    # User profile: nickname, species, local time, about blurb
-    if username:
-        from shared.user_db import get_user
-        user_profile = get_user(username)
-        if user_profile:
-            user_ctx = format_user_context(user_profile, username)
-            if user_ctx:
-                context_parts.append(user_ctx)
-
-    # Short-term memory: last N flushed chunks from this session
-    if recent_chunks:
-        context_parts.append(format_recent_chunks([c["text"] for c in recent_chunks]))
-
-    system_prompt = build_system_prompt(
-        _load_personality(),
-        context_type,
-        "\n\n".join(context_parts),
-    )
+    system_prompt = build_system_prompt(_load_personality(), context_type, context)
     response = await ask_berries(system_prompt=system_prompt, user_message=user_message, max_tokens=80)
 
     if username and response:
@@ -204,7 +170,6 @@ async def ask_berries_discord_mention(
     display_name: str,
     discord_id: str,
     channel_history: str,
-    created_at: datetime,
 ) -> str | None:
     """
     Full Discord @mention pipeline.
@@ -217,35 +182,36 @@ async def ask_berries_discord_mention(
         display_name:    Discord display name shown in the user_message to Berries.
         discord_id:      Discord user ID string; used for nickname lookup in user_db.
         channel_history: Pre-fetched formatted channel history string (from _get_channel_history).
-        created_at:      Message timestamp; formatted into the user_message for Berries.
     """
-    nickname = _get_nickname_discord(discord_id, display_name)
+    nickname = await asyncio.to_thread(_get_nickname_discord, discord_id, display_name)
     user_message = f"{nickname} said: {query}"
 
-    # Long-term memory via ChromaDB (use channel_history as recent_context for query rewriting)
-    docs, search_queries = await _chroma_context(
-        query,
+    req = BerriesRequest(
+        query=query,
+        display_name=display_name,
+        discord_id=discord_id,
+        # channel_history doubles as recency context for query rewriting
         recent_context=channel_history,
-        username=display_name,
+        channel_history=channel_history,
     )
-    chroma_block = format_chroma_context(docs) if docs else ""
-
-    # User profile: nickname, species, local time, about blurb
-    from shared.user_db import get_user_by_discord, get_twitch_link, get_user
-    _t_login = get_twitch_link(discord_id)
-    _db_user = get_user(_t_login) if _t_login else get_user_by_discord(discord_id)
-    user_profile_block = format_user_context(_db_user, display_name) if _db_user else ""
-
-    system_suffix = "\n\n".join(filter(None, [chroma_block, user_profile_block, channel_history]))
-    system_prompt = build_system_prompt(_load_personality(), ContextType.DISCORD_MENTION, system_suffix)
+    context = await build_context(_DISCORD_MENTION_PROVIDERS, req)
+    system_prompt = build_system_prompt(_load_personality(), ContextType.DISCORD_MENTION, context)
 
     log.debug("ask_berries_discord_mention — user_message: %.120r", user_message)
-    response = await ask_berries(system_prompt=system_prompt, user_message=user_message, max_tokens=600)
+    response = None
+    if AGENT_TOOLS_ENABLED:
+        # Experimental tool-use loop (search_memories, get_server_rules, ...).
+        # Falls back to the plain single-shot call below if unavailable.
+        from shared.agent import run_tool_loop
+        response = await run_tool_loop(system_prompt=system_prompt, user_message=user_message, max_tokens=600)
+    if response is None:
+        response = await ask_berries(system_prompt=system_prompt, user_message=user_message, max_tokens=600)
     response = cleanup_response(response) if response else response
     log.debug("ask_berries_discord_mention — response: %.120r", response)
 
     if response:
-        user_key = get_twitch_link(discord_id) or discord_id
+        from shared.user_db import get_twitch_link
+        user_key = await asyncio.to_thread(get_twitch_link, discord_id) or discord_id
         log_interaction(
             user_key=user_key,
             nickname=nickname,
@@ -255,68 +221,6 @@ async def ask_berries_discord_mention(
     return response
 
 
-async def ask_berries_movie_announcement(
-    movie_title: str,
-    movie_year: str,
-    notes: str = "",
-) -> tuple[str, str] | None:
-    """
-    Movie night announcement pipeline. Returns (announcement, gif_query) or None on failure.
-
-    Queries ChromaDB for past discussions about the movie, then makes two sequential LLM calls:
-      1. Twig asks Berries to write a Discord announcement → announcement text
-      2. Berries picks a Giphy search query to accompany the announcement → gif_query string
-
-    The system prompt uses the collaboration framing (Twig-directed) rather than the
-    @mention response instructions, since Berries is writing *for* the audience, not *to* a viewer.
-    """
-    docs, _ = await _chroma_context(
-        query=f"{movie_title} ({movie_year}) movie",
-        recent_context="",
-        username="Twig",
-    )
-    chroma_block = format_chroma_context(docs) if docs else ""
-    personality = _load_personality()
-    system = "\n\n".join(filter(None, [personality, chroma_block, _TWIG_COLLABORATION_INSTRUCTION]))
-
-    user_msg = (
-        f"[Twig]: Hey Berries, tonight we're going to be watching **{movie_title} ({movie_year})** "
-        f"for our weekly movie night starting right now. Can you write a friendly announcement to the "
-        f"Discord server that tells people what we will be watching, your silly or snarky personal "
-        f"opinions on the movie, and then tell people that they're welcome to join if that sounds like "
-        f"a good time to them? Don't pressure people, just let them know what's happening and tell them "
-        f"they're welcome to join. Please write your message for the audience, as your response will be "
-        f"posted _verbatim_ without formatting changes to the announcements channel for all to see."
-    )
-    if notes:
-        user_msg += f" Additional context from Twig: {notes}"
-
-    log.debug("ask_berries_movie_announcement — requesting announcement for %r (%s)", movie_title, movie_year)
-    announcement = await ask_berries(system_prompt=system, user_message=user_msg, max_tokens=600)
-    if not announcement:
-        log.warning("ask_berries_movie_announcement — LLM returned empty announcement")
-        return None
-    announcement = cleanup_response(announcement)
-
-    gif_prompt = (
-        "Thank you! Can you now generate a search query for Giphy to find a gif that fits the vibe "
-        "of your announcement? Reply with ONLY the search query, 2-5 words, no punctuation, no explanation."
-    )
-    gif_query = await ask_berries(
-        system_prompt=system,
-        messages=[
-            {"role": "user", "content": user_msg},
-            {"role": "assistant", "content": announcement},
-            {"role": "user", "content": gif_prompt},
-        ],
-        max_tokens=32,
-    )
-    gif_query = (gif_query or "").strip()
-    log.debug("ask_berries_movie_announcement — gif_query: %r", gif_query)
-
-    return announcement, gif_query
-
-
 async def ask_berries_twitch_going_live(
     stream_title: str,
     stream_category: str,
@@ -324,7 +228,7 @@ async def ask_berries_twitch_going_live(
     """
     Going-live announcement pipeline. Returns (announcement, gif_query) or None on failure.
 
-    Makes two sequential LLM calls under the collaboration framing:
+    Makes two sequential LLM calls:
       1. Twig asks Berries to write a going-live Discord announcement → announcement text
       2. Berries picks a Giphy search query to accompany the announcement → gif_query string
     """
@@ -339,8 +243,7 @@ async def ask_berries_twitch_going_live(
         )
         return None
 
-    personality = _load_personality()
-    system = "\n\n".join([personality, _TWIG_COLLABORATION_INSTRUCTION])
+    system = build_system_prompt(_load_personality(), ContextType.DISCORD_ANNOUNCE)
 
     user_msg = (
         f"[Twig]: Hey Berries, I just went live! Stream title: '{stream_title}', "
