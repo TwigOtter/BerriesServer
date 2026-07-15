@@ -21,7 +21,6 @@ Run with:
 import asyncio
 import hmac
 import json
-import logging
 import time
 import uuid
 from collections import deque
@@ -32,8 +31,9 @@ from shared.chroma_client import get_collection
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("ingest_api")
+from shared.logging_setup import setup_logging
+
+logger = setup_logging("ingest_api")
 
 from shared.config import (
     CHUNK_OVERLAP_SEC,

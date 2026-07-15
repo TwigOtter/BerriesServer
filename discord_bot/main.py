@@ -13,8 +13,6 @@ Run with:
 """
 
 import asyncio
-import logging
-import logging.handlers
 
 import discord
 import uvicorn
@@ -25,45 +23,16 @@ from shared.config import (
     DISCORD_BOT_WEBHOOK_PORT,
     DISCORD_TOKEN,
     DISCORD_WATCH_CHANNEL_IDS,
-    LOGS_DIR,
 )
+from shared.logging_setup import setup_logging
 from shared.movie_db import init_movie_db
 from shared.user_db import init_db as init_user_db
 from discord_bot.webhook import create_webhook_app
 
-# ── Logging ────────────────────────────────────────────────────────────────
-
-def _setup_logger() -> logging.Logger:
-    logger = logging.getLogger("discord_bot")
-    logger.setLevel(logging.DEBUG)
-
-    fmt = logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-    # Console handler — INFO and above
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    ch.setFormatter(fmt)
-    logger.addHandler(ch)
-
-    # File handler — DEBUG and above, rotates at 5 MB, keeps 3 backups
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    fh = logging.handlers.RotatingFileHandler(
-        LOGS_DIR / "discord_bot.log",
-        maxBytes=5 * 1024 * 1024,
-        backupCount=3,
-        encoding="utf-8",
-    )
-    fh.setLevel(logging.DEBUG)
-    fh.setFormatter(fmt)
-    logger.addHandler(fh)
-
-    return logger
-
-
-log = _setup_logger()
+# Root-logger config shared by all services: journald gets INFO+ from every
+# logger (shared/* included), logs/discord_bot.log gets DEBUG+, and noisy
+# third-party loggers are quieted. See shared/logging_setup.py.
+log = setup_logging("discord_bot")
 
 # ── Bot setup ──────────────────────────────────────────────────────────────
 

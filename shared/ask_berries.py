@@ -19,6 +19,7 @@ import asyncio
 import logging
 import re
 
+from shared import trace
 from shared.config import AGENT_TOOLS_ENABLED, PERSONALITY_FILE
 from shared.context_providers import (
     BerriesRequest,
@@ -86,12 +87,17 @@ async def ask_berries(
     user_message: str = "",
     max_tokens: int = 256,
     messages: list[dict] | None = None,
+    purpose: str = "chat_response",
 ) -> str | None:
     """Raw LLM call via get_completion(). No logging — callers handle that.
 
     messages: full conversation history. When provided, takes precedence over user_message.
+    purpose:  label for the call in logs/traces (see shared/llm_client.py).
     """
-    return await get_completion(system_prompt=system_prompt, user_message=user_message, max_tokens=max_tokens, messages=messages)
+    return await get_completion(
+        system_prompt=system_prompt, user_message=user_message,
+        max_tokens=max_tokens, messages=messages, purpose=purpose,
+    )
 
 
 async def ask_berries_discord(
@@ -105,11 +111,16 @@ async def ask_berries_discord(
     Use for short in-character replies that aren't full @mention or announcement pipelines
     (e.g. movie suggestion rejection).
     """
-    system = build_system_prompt(_load_personality(), context_type, context)
-    log.debug("ask_berries_discord — user_message: %.120r", user_message)
-    response = await ask_berries(system, user_message, max_tokens=max_tokens)
-    log.debug("ask_berries_discord — response: %.120r", response)
-    return cleanup_response(response) if response is not None else None
+    with trace.trace("discord_oneoff", context_type=context_type.name):
+        system = build_system_prompt(_load_personality(), context_type, context)
+        trace.add(system_prompt=system, user_message=user_message)
+        log.debug("ask_berries_discord — user_message: %.120r", user_message)
+        with trace.step("llm_response"):
+            response = await ask_berries(system, user_message, max_tokens=max_tokens)
+        log.debug("ask_berries_discord — response: %.120r", response)
+        response = cleanup_response(response) if response is not None else None
+        trace.add(response=response)
+        return response
 
 
 async def ask_berries_twitch(
@@ -132,37 +143,43 @@ async def ask_berries_twitch(
         recent_chunks:      Deque of recently flushed chunks for short-term memory context.
         recent_buffer_text: Last N in-progress buffer entries for query rewriting context.
     """
-    nickname = await asyncio.to_thread(_get_nickname_twitch, username) if username else ""
-    if username and nickname:
-        user_message = (
-            f"A viewer named {nickname} (username: {username}, call them '{nickname}') "
-            f'says: "{query}" -- Please respond directly to them.'
+    with trace.trace("twitch_mention", username=username, query=query, tts=tts):
+        with trace.step("nickname_lookup"):
+            nickname = await asyncio.to_thread(_get_nickname_twitch, username) if username else ""
+        if username and nickname:
+            user_message = (
+                f"A viewer named {nickname} (username: {username}, call them '{nickname}') "
+                f'says: "{query}" -- Please respond directly to them.'
+            )
+        else:
+            user_message = query
+
+        context_type = ContextType.TWITCH_TTS if tts else ContextType.TWITCH_CHAT
+
+        req = BerriesRequest(
+            query=query,
+            display_name=nickname or username or "a viewer",
+            t_login=username or None,
+            recent_context=recent_buffer_text,
+            recent_chunks=[c["text"] for c in recent_chunks],
         )
-    else:
-        user_message = query
+        context = await build_context(_TWITCH_PROVIDERS, req)
 
-    context_type = ContextType.TWITCH_TTS if tts else ContextType.TWITCH_CHAT
+        system_prompt = build_system_prompt(_load_personality(), context_type, context)
+        trace.add(system_prompt=system_prompt, user_message=user_message)
+        with trace.step("llm_response"):
+            response = await ask_berries(system_prompt=system_prompt, user_message=user_message, max_tokens=80)
+        trace.add(response=response)
 
-    req = BerriesRequest(
-        query=query,
-        display_name=nickname or username or "a viewer",
-        t_login=username or None,
-        recent_context=recent_buffer_text,
-        recent_chunks=[c["text"] for c in recent_chunks],
-    )
-    context = await build_context(_TWITCH_PROVIDERS, req)
-
-    system_prompt = build_system_prompt(_load_personality(), context_type, context)
-    response = await ask_berries(system_prompt=system_prompt, user_message=user_message, max_tokens=80)
-
-    if username and response:
-        log_interaction(
-            user_key=username,
-            nickname=nickname or username,
-            user_message=query,
-            berries_response=response,
-        )
-    return response
+        if username and response:
+            with trace.step("log_interaction"):
+                log_interaction(
+                    user_key=username,
+                    nickname=nickname or username,
+                    user_message=query,
+                    berries_response=response,
+                )
+        return response
 
 
 async def ask_berries_discord_mention(
@@ -183,42 +200,49 @@ async def ask_berries_discord_mention(
         discord_id:      Discord user ID string; used for nickname lookup in user_db.
         channel_history: Pre-fetched formatted channel history string (from _get_channel_history).
     """
-    nickname = await asyncio.to_thread(_get_nickname_discord, discord_id, display_name)
-    user_message = f"{nickname} said: {query}"
+    with trace.trace("discord_mention", username=display_name, discord_id=discord_id, query=query):
+        with trace.step("nickname_lookup"):
+            nickname = await asyncio.to_thread(_get_nickname_discord, discord_id, display_name)
+        user_message = f"{nickname} said: {query}"
 
-    req = BerriesRequest(
-        query=query,
-        display_name=display_name,
-        discord_id=discord_id,
-        # channel_history doubles as recency context for query rewriting
-        recent_context=channel_history,
-        channel_history=channel_history,
-    )
-    context = await build_context(_DISCORD_MENTION_PROVIDERS, req)
-    system_prompt = build_system_prompt(_load_personality(), ContextType.DISCORD_MENTION, context)
-
-    log.debug("ask_berries_discord_mention — user_message: %.120r", user_message)
-    response = None
-    if AGENT_TOOLS_ENABLED:
-        # Experimental tool-use loop (search_memories, get_server_rules, ...).
-        # Falls back to the plain single-shot call below if unavailable.
-        from shared.agent import run_tool_loop
-        response = await run_tool_loop(system_prompt=system_prompt, user_message=user_message, max_tokens=600)
-    if response is None:
-        response = await ask_berries(system_prompt=system_prompt, user_message=user_message, max_tokens=600)
-    response = cleanup_response(response) if response else response
-    log.debug("ask_berries_discord_mention — response: %.120r", response)
-
-    if response:
-        from shared.user_db import get_twitch_link
-        user_key = await asyncio.to_thread(get_twitch_link, discord_id) or discord_id
-        log_interaction(
-            user_key=user_key,
-            nickname=nickname,
-            user_message=query,
-            berries_response=response,
+        req = BerriesRequest(
+            query=query,
+            display_name=display_name,
+            discord_id=discord_id,
+            # channel_history doubles as recency context for query rewriting
+            recent_context=channel_history,
+            channel_history=channel_history,
         )
-    return response
+        context = await build_context(_DISCORD_MENTION_PROVIDERS, req)
+        system_prompt = build_system_prompt(_load_personality(), ContextType.DISCORD_MENTION, context)
+        trace.add(system_prompt=system_prompt, user_message=user_message)
+
+        log.debug("ask_berries_discord_mention — user_message: %.120r", user_message)
+        response = None
+        if AGENT_TOOLS_ENABLED:
+            # Experimental tool-use loop (search_memories, get_server_rules, ...).
+            # Falls back to the plain single-shot call below if unavailable.
+            from shared.agent import run_tool_loop
+            with trace.step("agent_loop"):
+                response = await run_tool_loop(system_prompt=system_prompt, user_message=user_message, max_tokens=600)
+        if response is None:
+            with trace.step("llm_response"):
+                response = await ask_berries(system_prompt=system_prompt, user_message=user_message, max_tokens=600)
+        response = cleanup_response(response) if response else response
+        trace.add(response=response)
+        log.debug("ask_berries_discord_mention — response: %.120r", response)
+
+        if response:
+            from shared.user_db import get_twitch_link
+            with trace.step("log_interaction"):
+                user_key = await asyncio.to_thread(get_twitch_link, discord_id) or discord_id
+                log_interaction(
+                    user_key=user_key,
+                    nickname=nickname,
+                    user_message=query,
+                    berries_response=response,
+                )
+        return response
 
 
 async def ask_berries_twitch_going_live(
@@ -243,6 +267,11 @@ async def ask_berries_twitch_going_live(
         )
         return None
 
+    with trace.trace("going_live", stream_title=stream_title, stream_category=stream_category):
+        return await _going_live_inner(stream_title, stream_category)
+
+
+async def _going_live_inner(stream_title: str, stream_category: str) -> tuple[str, str] | None:
     system = build_system_prompt(_load_personality(), ContextType.DISCORD_ANNOUNCE)
 
     user_msg = (
@@ -255,27 +284,33 @@ async def ask_berries_twitch_going_live(
         f"Please write your message for the audience, as your response will be posted verbatim."
     )
 
+    trace.add(system_prompt=system, user_message=user_msg)
     log.debug("ask_berries_twitch_going_live — requesting announcement for %r / %r", stream_title, stream_category)
-    announcement = await ask_berries(system_prompt=system, user_message=user_msg, max_tokens=400)
+    with trace.step("llm_announcement"):
+        announcement = await ask_berries(system_prompt=system, user_message=user_msg, max_tokens=400, purpose="going_live_announcement")
     if not announcement:
         log.warning("ask_berries_twitch_going_live — LLM returned empty announcement")
         return None
     announcement = cleanup_response(announcement)
+    trace.add(response=announcement)
 
     gif_prompt = (
         "Great! Now generate a Giphy search query for a gif that fits the vibe of your announcement. "
         "Reply with ONLY the search query, 2-5 words, no punctuation, no explanation."
     )
-    gif_query = await ask_berries(
-        system_prompt=system,
-        messages=[
-            {"role": "user", "content": user_msg},
-            {"role": "assistant", "content": announcement},
-            {"role": "user", "content": gif_prompt},
-        ],
-        max_tokens=32,
-    )
+    with trace.step("llm_gif_query"):
+        gif_query = await ask_berries(
+            system_prompt=system,
+            messages=[
+                {"role": "user", "content": user_msg},
+                {"role": "assistant", "content": announcement},
+                {"role": "user", "content": gif_prompt},
+            ],
+            max_tokens=32,
+            purpose="gif_query",
+        )
     gif_query = (gif_query or "").strip()
+    trace.add(gif_query=gif_query)
     log.debug("ask_berries_twitch_going_live — gif_query: %r", gif_query)
 
     return announcement, gif_query

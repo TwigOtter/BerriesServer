@@ -14,7 +14,6 @@ Body:     {"texts": ["..."]}
 Response: {"embeddings": [[float, ...], ...]}
 """
 
-import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -26,13 +25,11 @@ from pydantic import BaseModel
 import torch
 
 from shared.config import DATA_DIR, EMBEDDING_MODEL
+from shared.logging_setup import setup_logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-log = logging.getLogger("embed_api")
+# Quiets the httpx/huggingface_hub INFO spam that used to flood journald with
+# "HTTP Request: HEAD https://huggingface.co/..." lines on every startup.
+log = setup_logging("embed_api")
 
 _model = None
 

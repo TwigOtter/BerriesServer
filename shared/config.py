@@ -114,6 +114,13 @@ DISCORD_MOD_PING_CHANNEL_ID: int | None = int(_mod_ping_id) if _mod_ping_id else
 MOD_PING_COOLDOWN_SEC = int(os.getenv("MOD_PING_COOLDOWN_SEC", "600"))
 SERVER_RULES_FILE = BASE_DIR / "berries_bot" / "lore" / "server-rules.md"
 
+# ── Tracing / observability ────────────────────────────────────────────────
+# Every response pipeline writes a per-interaction trace (step timings, LLM
+# calls, retrieval details, prompts) to logs/traces/YYYY-MM-DD.jsonl and logs
+# a one-line summary. Inspect with scripts/traces.py. See shared/trace.py.
+TRACE_ENABLED = os.getenv("TRACE_ENABLED", "true").lower() in ("1", "true", "yes")
+TRACES_DIR = LOGS_DIR / "traces"
+
 # ── OMDb API ───────────────────────────────────────────────────────────────
 OMDB_API_KEY = os.getenv("OMDB_API_KEY", "")
 
