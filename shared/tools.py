@@ -66,10 +66,11 @@ async def _search_memories(query: str) -> str:
 # ── get_server_rules ─────────────────────────────────────────────────────────
 
 async def _get_server_rules() -> str:
+    # This tool is the only path to the rules: they are not injected into the
+    # prompt (too long, rarely relevant) and lore is excluded from vector
+    # search. See docs/agent-tools.md → Decided.
     if SERVER_RULES_FILE.exists():
         return SERVER_RULES_FILE.read_text(encoding="utf-8").strip()
-    # TODO(Twig): write berries_bot/lore/server-rules.md (it doubles as a lore
-    # file, so reindex_lore.py will also make rules retrievable passively).
     return "The server rules file has not been written yet."
 
 

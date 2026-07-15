@@ -101,6 +101,12 @@ def query_chroma_multi(queries: list[str], n_results: int = CHROMA_N_RESULTS) ->
     Results are interleaved round-robin by rank across queries (best from each
     query first, then 2nd-best from each, etc.) so that each query is guaranteed
     at least one result before any query claims a second slot.
+
+    `source: "lore"` entries are excluded: facts.md is injected into every
+    prompt by LoreProvider, and server-rules.md is served by the
+    get_server_rules tool. Leaving them in the index would let ~20 short
+    curated entries compete with thousands of transcript chunks for the same
+    handful of slots — a contest they lose while still consuming candidates.
     """
     if not queries:
         return []
@@ -108,6 +114,10 @@ def query_chroma_multi(queries: list[str], n_results: int = CHROMA_N_RESULTS) ->
     results = collection.query(
         query_texts=queries,
         n_results=n_results,
+        # $ne also keeps chunks that carry no "source" key at all (the Twitch
+        # transcript chunks, the bulk of the index) — verified against the
+        # live collection, not assumed.
+        where={"source": {"$ne": "lore"}},
         include=["documents", "metadatas", "distances"],
     )
 

@@ -12,16 +12,21 @@ touching the pipelines themselves.
 """
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Protocol
 
 from shared import trace
+from shared.config import LORE_FACTS_FILE
 from shared.prompt_builder import (
     format_chroma_context,
+    format_lore,
     format_recent_chunks,
     format_user_context,
 )
 from shared.retrieval import retrieve_context
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -40,6 +45,34 @@ class BerriesRequest:
 class ContextProvider(Protocol):
     name: str
     async def provide(self, req: BerriesRequest) -> str | None: ...
+
+
+class LoreProvider:
+    """
+    Curated character facts (berries_bot/lore/facts.md), injected verbatim into
+    every personality prompt.
+
+    Not retrieved: the whole file is ~2k tokens, small enough to always carry,
+    and retrieval was the failure mode. Measured against the live index, the
+    ~20 lore entries reached the prompt for only about half of the questions
+    they answered — they lose the similarity contest against ~9k transcript
+    chunks. On a miss the model does not deflect (personality.txt's "be
+    spookily vague" rule only fires for things Berries *wouldn't* know — his
+    own bandana isn't one), it invents a confident answer instead. Always
+    injecting took a 6-question fabrication check from 3/6 accurate to 5/6.
+
+    Runs first so personality + facts form one stable prefix ahead of the
+    per-request blocks.
+    """
+
+    name = "lore"
+
+    async def provide(self, req: BerriesRequest) -> str | None:
+        if not LORE_FACTS_FILE.exists():
+            log.warning("lore facts file not found (%s) — no character facts injected", LORE_FACTS_FILE)
+            return None
+        text = LORE_FACTS_FILE.read_text(encoding="utf-8").strip()
+        return format_lore(text) if text else None
 
 
 class ChromaContextProvider:

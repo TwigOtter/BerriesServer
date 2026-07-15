@@ -25,6 +25,7 @@ from shared.context_providers import (
     BerriesRequest,
     ChannelHistoryProvider,
     ChromaContextProvider,
+    LoreProvider,
     RecentChunksProvider,
     UserProfileProvider,
     build_context,
@@ -36,13 +37,18 @@ from shared.interaction_log import log_interaction
 log = logging.getLogger(__name__)
 
 # Context blocks per platform, in prompt order. Adding a new context source
-# (lore, server rules, ...) means adding a provider here, not a new pipeline.
+# (server rules, tool results, ...) means adding a provider here, not a new
+# pipeline. LoreProvider leads both lists so personality + character facts sit
+# together as one stable prefix; both platforms get the same facts, so Berries
+# answers a question about himself the same way wherever he is asked.
 _TWITCH_PROVIDERS = [
+    LoreProvider(),
     ChromaContextProvider(),
     UserProfileProvider(),
     RecentChunksProvider(),
 ]
 _DISCORD_MENTION_PROVIDERS = [
+    LoreProvider(),
     ChromaContextProvider(),
     UserProfileProvider(),
     ChannelHistoryProvider(),

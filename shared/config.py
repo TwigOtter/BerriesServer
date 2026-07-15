@@ -26,6 +26,10 @@ TRANSCRIPTS_DIR = DATA_DIR / "transcripts"
 CHROMADB_DIR = DATA_DIR / "chromadb"
 LOGS_DIR = BASE_DIR / "logs"
 PERSONALITY_FILE = BASE_DIR / "berries_bot" / "personality.txt"
+# Curated character facts, injected into every personality prompt by
+# LoreProvider. Other lore files stay retrieval-/tool-only — see
+# berries_bot/lore/README.md.
+LORE_FACTS_FILE = BASE_DIR / "berries_bot" / "lore" / "facts.md"
 
 # ── ingest_api ─────────────────────────────────────────────────────────────
 INGEST_HOST = os.getenv("INGEST_HOST", "0.0.0.0")
