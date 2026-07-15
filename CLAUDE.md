@@ -21,7 +21,7 @@ uvicorn ingest_api.main:app --host 0.0.0.0 --port 8000
 python -m discord_bot.main
 ```
 
-Production uses systemd services in `deploy/` (`berries-ingest.service`, `berries-discord.service`).
+Production uses systemd services in `deploy/` (`berries-ingest.service`, `berries-discord.service`). Units are **symlinked** into `/etc/systemd/system/`, so `deploy/` is the source of truth — but never run `systemctl disable`/`reenable` on them (it deletes the symlink). See `docs/systemd-units.md`.
 
 ```bash
 sudo systemctl restart berries-ingest berries-discord
