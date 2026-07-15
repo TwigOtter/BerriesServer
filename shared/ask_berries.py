@@ -25,7 +25,6 @@ from shared.context_providers import (
     BerriesRequest,
     ChannelHistoryProvider,
     ChromaContextProvider,
-    LoreProvider,
     RecentChunksProvider,
     UserProfileProvider,
     build_context,
@@ -38,17 +37,19 @@ log = logging.getLogger(__name__)
 
 # Context blocks per platform, in prompt order. Adding a new context source
 # (server rules, tool results, ...) means adding a provider here, not a new
-# pipeline. LoreProvider leads both lists so personality + character facts sit
-# together as one stable prefix; both platforms get the same facts, so Berries
-# answers a question about himself the same way wherever he is asked.
+# pipeline.
+#
+# LoreProvider is intentionally absent: facts.md is reachable through ordinary
+# vector search instead (the source:"lore" filter in query_chroma_multi is
+# lifted to match). This is a known-worse interim — measured 3/6 on the
+# fabrication check vs 5/6 when injected — accepted while personality.txt and
+# facts.md are deduplicated and lore moves to its own dedicated query.
 _TWITCH_PROVIDERS = [
-    LoreProvider(),
     ChromaContextProvider(),
     UserProfileProvider(),
     RecentChunksProvider(),
 ]
 _DISCORD_MENTION_PROVIDERS = [
-    LoreProvider(),
     ChromaContextProvider(),
     UserProfileProvider(),
     ChannelHistoryProvider(),
