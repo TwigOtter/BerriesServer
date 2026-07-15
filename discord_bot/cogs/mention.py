@@ -7,6 +7,7 @@ redirect-to-berries-chat policy for non-whitelisted channels.
 """
 
 import logging
+import time
 from contextlib import asynccontextmanager
 
 import discord
@@ -142,6 +143,7 @@ class MentionCog(commands.Cog):
                 return
 
         try:
+            t0 = time.perf_counter()
             async with _maybe_typing(message.channel):
                 history = await self._get_channel_history(message.channel, before=message)
                 response = await ask_berries_discord_mention(
@@ -153,7 +155,10 @@ class MentionCog(commands.Cog):
                 log.debug("LLM response for mention: %.120r", response)
 
             await message.channel.send(response)
-            log.info("Sent response to %s in channel %s", message.author, message.channel.id)
+            log.info(
+                "Sent response to %s in channel %s (%.2fs end-to-end)",
+                message.author, message.channel.id, time.perf_counter() - t0,
+            )
         except Exception:
             log.exception(
                 "Failed to generate/send response to %s in channel %s",

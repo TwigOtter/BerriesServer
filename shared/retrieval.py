@@ -32,6 +32,7 @@ from shared.config import (
     RERANK_ENABLED,
     RERANK_MIN_SCORE,
 )
+from shared import trace
 from shared.chroma_client import query_chroma_multi
 from shared.llm_client import get_completion
 from shared.retrieval_log import log_retrieval
@@ -62,7 +63,10 @@ async def rewrite_queries(
 
     original = f"{username} {message}".strip()
     try:
-        raw = await get_completion(system_prompt=system, user_message=prompt, max_tokens=128, model=ANTHROPIC_ASSIST_MODEL)
+        raw = await get_completion(
+            system_prompt=system, user_message=prompt, max_tokens=128,
+            model=ANTHROPIC_ASSIST_MODEL, purpose="rewrite_queries",
+        )
         queries = [q.strip() for q in raw.strip().splitlines() if q.strip()]
         log.debug("rewrite_queries got parsed queries: %r", queries)
         if not queries:
@@ -117,6 +121,7 @@ async def rerank_chunks(
             user_message=prompt,
             max_tokens=8 * len(docs) + 32,
             model=ANTHROPIC_ASSIST_MODEL,
+            purpose="rerank",
         )
         match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
         if not match:
@@ -146,18 +151,24 @@ async def retrieve_context(
     reranker abstains because nothing retrieved was actually relevant.
     """
     try:
-        search_queries = await rewrite_queries(query, recent_context, username)
+        with trace.step("rewrite_queries") as s:
+            search_queries = await rewrite_queries(query, recent_context, username)
+            s["queries"] = search_queries
         n_candidates = RERANK_CANDIDATES if RERANK_ENABLED else CHROMA_N_RESULTS
         # query_chroma_multi blocks on a synchronous embedding HTTP call —
         # run it off the event loop so the bot stays responsive.
-        candidates = await asyncio.to_thread(query_chroma_multi, search_queries, n_candidates)
+        with trace.step("vector_search") as s:
+            candidates = await asyncio.to_thread(query_chroma_multi, search_queries, n_candidates)
+            s["candidates"] = len(candidates)
         log.debug(
             "ChromaDB returned %d candidate(s) for %d rewritten query/queries",
             len(candidates), len(search_queries),
         )
 
         if RERANK_ENABLED:
-            docs = await rerank_chunks(query, candidates)
+            with trace.step("rerank") as s:
+                docs = await rerank_chunks(query, candidates)
+                s["kept"] = len(docs)
         else:
             docs = candidates[:CHROMA_N_RESULTS]
 
@@ -169,6 +180,18 @@ async def retrieve_context(
         if raw_texts:
             await asyncio.to_thread(log_retrieval, query=query, chunks=raw_texts)
 
+        log.info(
+            "retrieval — %d query/queries → %d candidate(s) → %d chunk(s) injected",
+            len(search_queries), len(candidates), len(docs),
+        )
+        trace.add(retrieval={
+            "queries": search_queries,
+            "n_candidates": len(candidates),
+            "injected": [
+                {"source": meta.get("source", "transcript"), "text": doc}
+                for doc, meta in docs
+            ],
+        })
         return docs, search_queries
     except Exception:
         log.exception("Retrieval failed (no context injected)")

@@ -15,6 +15,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from shared import trace
 from shared.prompt_builder import (
     format_chroma_context,
     format_recent_chunks,
@@ -37,11 +38,14 @@ class BerriesRequest:
 
 
 class ContextProvider(Protocol):
+    name: str
     async def provide(self, req: BerriesRequest) -> str | None: ...
 
 
 class ChromaContextProvider:
     """Long-term memory: reranked ChromaDB retrieval over past transcripts."""
+
+    name = "chroma"
 
     async def provide(self, req: BerriesRequest) -> str | None:
         docs, _queries = await retrieve_context(
@@ -54,6 +58,8 @@ class ChromaContextProvider:
 
 class UserProfileProvider:
     """USER PROFILE block from user_db, looked up by t_login or discord_id."""
+
+    name = "user_profile"
 
     async def provide(self, req: BerriesRequest) -> str | None:
         user = await asyncio.to_thread(self._lookup, req)
@@ -75,12 +81,16 @@ class UserProfileProvider:
 class RecentChunksProvider:
     """Short-term memory: recently flushed chunks from the live session."""
 
+    name = "recent_chunks"
+
     async def provide(self, req: BerriesRequest) -> str | None:
         return format_recent_chunks(req.recent_chunks) if req.recent_chunks else None
 
 
 class ChannelHistoryProvider:
     """Pre-formatted Discord channel history (fetched by the bot)."""
+
+    name = "channel_history"
 
     async def provide(self, req: BerriesRequest) -> str | None:
         return req.channel_history or None
@@ -93,7 +103,10 @@ async def build_context(
     """Run providers in order and join the non-empty blocks."""
     parts: list[str] = []
     for provider in providers:
-        block = await provider.provide(req)
+        name = getattr(provider, "name", type(provider).__name__)
+        with trace.step(f"context_{name}") as s:
+            block = await provider.provide(req)
+            s["chars"] = len(block) if block else 0
         if block:
             parts.append(block)
     return "\n\n".join(parts)

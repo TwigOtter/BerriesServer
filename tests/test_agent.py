@@ -22,7 +22,11 @@ def _tool_block(name: str, tool_input: dict, block_id: str = "tu_1"):
     return SimpleNamespace(type="tool_use", name=name, input=tool_input, id=block_id)
 
 def _response(stop_reason: str, content: list):
-    return SimpleNamespace(stop_reason=stop_reason, content=content)
+    return SimpleNamespace(
+        stop_reason=stop_reason,
+        content=content,
+        usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+    )
 
 
 class _FakeAnthropic:
