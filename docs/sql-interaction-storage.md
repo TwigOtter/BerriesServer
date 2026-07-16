@@ -72,8 +72,10 @@ CREATE TABLE twitch_events (
     type            TEXT NOT NULL,      -- 'message' | 'speech' | 'resub' | 'raid' | 'redeem' | 'stream_event' | ...
     content         TEXT,               -- message text / human-readable event text
     payload         TEXT,               -- JSON: bits, tier, months, raid size, emote data...
+    message_id      TEXT UNIQUE,          -- Twitch message ID (for chat messages)
+    reply_to_message_id TEXT,               -- Twitch message ID of the message being replied to
+    is_bot          INTEGER NOT NULL DEFAULT 0,   -- includes Berries himself
     invoked_berries INTEGER NOT NULL DEFAULT 0,
-    berries_response TEXT               -- what Berries said back, when invoked
 );
 CREATE INDEX idx_twitch_user_time ON twitch_events(user_id, created_at);
 CREATE INDEX idx_twitch_time      ON twitch_events(created_at);
@@ -90,9 +92,8 @@ CREATE TABLE discord_messages (
     message_id          TEXT UNIQUE,
     message_text        TEXT,
     reply_to_message_id TEXT,
-    is_bot              INTEGER NOT NULL DEFAULT 0,   -- includes Berries herself
+    is_bot              INTEGER NOT NULL DEFAULT 0,   -- includes Berries himself
     invoked_berries     INTEGER NOT NULL DEFAULT 0,
-    berries_response    TEXT
 );
 CREATE INDEX idx_discord_user_time    ON discord_messages(user_id, created_at);
 CREATE INDEX idx_discord_channel_time ON discord_messages(channel_id, created_at);
@@ -106,10 +107,6 @@ Design notes (settled in discussion):
 
 - `payload` JSON column instead of packing resub/raid values into `content`:
   keeps `content` clean for text search while structured values stay queryable.
-- `berries_response` lives on the invoking row. Long-term this lets the daily
-  `interaction_log` JSON files retire — dreaming can query
-  `WHERE invoked_berries = 1 AND created_at >= ...` instead. (Out of scope for
-  the initial implementation; see Phases.)
 - `created_at` is a UTC instant; `stream_date` is a local calendar day —
   consistent with the LOCAL_TIMEZONE convention established for the daily
   logs (absolute instants UTC, calendar-day labels local).
@@ -178,8 +175,11 @@ the migration.
 
 - One DB file (`interactions.db`) vs. folding into an existing one: one new
   file is suggested, keeping `users.db` (profiles) separate from event firehose.
+  - Yes, one new file -- `interactions.db` is the plan.
 - Retention: tables grow forever; fine for now, but a pruning/archival story
   may eventually be wanted for `discord_messages` in busy channels.
+  - We aren't that busy, we can keep it all for now.
 - Whether Discord mention channel-history should switch to SQL or stay on the
   live API fetch (SQL only covers watched channels; the live fetch covers any
   channel Berries is mentioned in — probably keep the live fetch as fallback).
+  - Live fetch should be the primary source, and SQL can be used for long term history and for watched channels.
