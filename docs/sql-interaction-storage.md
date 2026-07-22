@@ -1,8 +1,14 @@
 # Design: SQL-backed interaction storage
 
-**Status:** Proposed — approved by Twig for implementation on a fresh branch
-(after PR #12 merges). This doc is the spec; the implementing session should
-treat decisions here as settled unless marked as an open question.
+**Status:** Phase 1 implemented (2026-07-22) — `shared/interactions_db.py`
+dual-writes `twitch_events` (all ingest endpoints + Berries' replies) and
+`discord_messages` (watcher + mention cogs, both directions) alongside the
+existing JSONL/Chroma flow. Nothing reads the DB yet; writers are best-effort
+(exceptions logged, never raised) so logging can't break the response path.
+Phase-1 notes: Twitch mention events carry no msgId, so a mention row may
+duplicate its /event/chat row (`invoked_berries` distinguishes them);
+Discord rows store tag-resolved text (see `discord_bot/utils.py`).
+Phases 2-5 below remain as specced.
 
 ## Motivation
 

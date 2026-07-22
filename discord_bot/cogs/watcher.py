@@ -17,8 +17,9 @@ from datetime import datetime, timezone
 import discord
 from discord.ext import commands
 
-from discord_bot.utils import resolve_discord_tags
+from discord_bot.utils import message_row, resolve_discord_tags
 from shared.chroma_client import get_collection
+from shared.interactions_db import log_discord_message
 from shared.config import (
     CHUNK_TOKEN_LIMIT,
     DISCORD_CHUNK_OVERLAP_MESSAGES,
@@ -45,6 +46,13 @@ class WatcherCog(commands.Cog):
             return
         if not message.content:
             return
+
+        # Dual-write the per-message row (docs/sql-interaction-storage.md
+        # Phase 1); the chunk flush below stays the retrieval path for now.
+        await asyncio.to_thread(
+            log_discord_message,
+            **message_row(message, bot_user=self.bot.user),
+        )
 
         channel_id = message.channel.id
         buf = self._buffers.setdefault(channel_id, [])

@@ -54,6 +54,7 @@ Streamer.bot → ingest_api (8000) → ChromaDB + SQLite + JSONL transcripts
 - `llm_client.py` — Async abstraction over Anthropic API or Ollama (swapped via `LLM_BACKEND` env var).
 - `chroma_client.py` — Singleton ChromaDB client using local `nomic-ai/nomic-embed-text-v1` embeddings (8192-token limit, requires `einops`).
 - `user_db.py` / `movie_db.py` — SQLite wrappers for user profiles and movie suggestions/history.
+- `interactions_db.py` — Per-event store (`data/interactions.db`, WAL): raw Twitch events and Discord messages, dual-written alongside JSONL/Chroma (Phase 1 of `docs/sql-interaction-storage.md`; nothing reads it yet).
 
 ## Configuration
 

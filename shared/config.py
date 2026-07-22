@@ -150,3 +150,7 @@ TWITCH_CHANNEL = os.getenv("TWITCH_CHANNEL", "twigotter")
 # ── Databases ──────────────────────────────────────────────────────────────
 USERS_DB_PATH = DATA_DIR / "users.db"
 MOVIES_DB_PATH = DATA_DIR / "movies.db"
+# Per-event interaction store (docs/sql-interaction-storage.md). Phase 1:
+# dual-written alongside the JSONL/Chroma flow; will become the system of
+# record that ChromaDB is derived from.
+INTERACTIONS_DB_PATH = DATA_DIR / "interactions.db"
