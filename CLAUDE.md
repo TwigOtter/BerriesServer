@@ -21,7 +21,7 @@ uvicorn ingest_api.main:app --host 0.0.0.0 --port 8000
 python -m discord_bot.main
 ```
 
-Production uses systemd services in `deploy/` (`berries-ingest.service`, `berries-discord.service`).
+Production uses systemd services in `deploy/` (`berries-ingest.service`, `berries-discord.service`). Units are **symlinked** into `/etc/systemd/system/`, so `deploy/` is the source of truth — but never run `systemctl disable`/`reenable` on them (it deletes the symlink). See `docs/systemd-units.md`.
 
 ```bash
 sudo systemctl restart berries-ingest berries-discord
@@ -42,12 +42,13 @@ Streamer.bot → ingest_api (8000) → ChromaDB + SQLite + JSONL transcripts
 ### Services
 - **`ingest_api/`** — Receives all Streamer.bot events; buffers and chunks chat (~480 tokens or 5 min timeout); embeds chunks into ChromaDB; upserts user profiles; calls `ask_berries_twitch()` on mentions.
 - **`discord_bot/`** — `main.py` is a slim entry point that loads feature cogs (`cogs/mention.py`, `cogs/watcher.py`, `cogs/moderation.py`, `cogs/movies.py`, `cogs/profile.py`), the going-live webhook server (`webhook.py`), and OMDb/Giphy clients (`services.py`); calls `ask_berries_discord_mention()` and `ask_berries_twitch_going_live()`.
-- **`berries_bot/`** — Config/assets only. `personality.txt` is the character prompt loaded by `shared/ask_berries.py`. `lore/*.md` holds curated character facts indexed into ChromaDB via `python scripts/reindex_lore.py` (one entry per `## section`, surfaced through normal retrieval).
+- **`berries_bot/`** — Config/assets only. `personality.txt` is the character prompt loaded by `shared/ask_berries.py`. `lore/facts.md` holds curated character facts, retrieved by `LoreProvider` from a **dedicated lore-only ChromaDB collection** (recall-oriented: generous top-n, lenient threshold, no rerank — see `berries_bot/lore/README.md`); reindex with `python scripts/reindex_lore.py` after editing. `lore/server-rules.md` is read on demand by the `get_server_rules()` tool and never indexed as lore.
 
 ### Shared Libraries (`shared/`)
 - `ask_berries.py` — LLM hub; all response pipelines live here (nickname lookup, retrieval, prompt assembly, logging). Each pipeline runs inside a `shared/trace.py` trace.
 - `trace.py` / `logging_setup.py` — Observability: per-interaction traces (step timings, LLM/tool calls, prompts) written to `logs/traces/*.jsonl` + one consistent root-logger config for all services. Inspect traces with `python scripts/traces.py`; see `docs/observability.md`.
-- `retrieval.py` — RAG retrieval stage: query rewriting → multi-query vector search → assist-model reranking (with abstain) → retrieval logging.
+- `retrieval.py` — RAG retrieval stage: query rewriting → multi-query vector search → assist-model reranking (with abstain) → retrieval logging. Searches transcripts/summaries/Discord; lore is retrieved separately by `LoreProvider` from its own collection.
+- `context_providers.py` — Composable system-prompt blocks (`LoreProvider`, `ChromaContextProvider`, `UserProfileProvider`, `RecentChunksProvider`, `ChannelHistoryProvider`). Pipelines in `ask_berries.py` compose a list per platform; both platforms lead with `LoreProvider` so the prompt is the same wherever Berries is invoked.
 - `prompt_builder.py` — Assembles system prompts from personality + context formatters + per-ContextType instructions.
 - `config.py` — All config from `.env`; every service imports from here.
 - `llm_client.py` — Async abstraction over Anthropic API or Ollama (swapped via `LLM_BACKEND` env var).
@@ -62,7 +63,8 @@ Copy `.env.example` to `.env`. Key variables:
 - `DISCORD_TOKEN`, `DISCORD_BERRIES_CHANNEL_WHITELIST_IDS`, `DISCORD_ANNOUNCE_CHANNEL_ID`
 - `INGEST_SECRET` — shared auth header between services
 - `LOCAL_TIMEZONE` (default `America/Chicago`) — calendar-day keying for daily logs, `stream_date`, transcript filenames, and dream.py's date math; absolute timestamps stay UTC
-- `CHUNK_TOKEN_LIMIT=480`, `CHUNK_TIMEOUT_SEC=300`, `CHROMA_N_RESULTS=4`
+- `CHUNK_TOKEN_LIMIT=480`, `CHUNK_TIMEOUT_SEC=300`, `CHROMA_N_RESULTS=3`
+- `LORE_COLLECTION=berries_lore`, `LORE_N_RESULTS=6`, `LORE_L2_THRESHOLD=1.5` — recall-oriented lore retrieval (`LoreProvider`); see `berries_bot/lore/README.md`
 - `RERANK_ENABLED=true`, `RERANK_CANDIDATES=12`, `RERANK_MIN_SCORE=5` — assist-model reranking of retrieval candidates (`shared/retrieval.py`); measure with `python scripts/eval_retrieval.py`
 - `AGENT_TOOLS_ENABLED=false` — experimental tool-use loop for Discord mentions (`shared/agent.py`, `shared/tools.py`); see `docs/agent-tools.md` before enabling
 - `TRACE_ENABLED=true` — per-interaction traces in `logs/traces/YYYY-MM-DD.jsonl` (step timings, LLM token usage, full prompts); inspect with `python scripts/traces.py`

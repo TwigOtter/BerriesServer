@@ -36,7 +36,4 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 # NOTE: deny list (~@privileged @resources) omitted — PyTorch/sentence-transformers
 # call syscalls in @resources during init. Matches berries-ingest/discord approach.
-UMask=0077
-
-[Install]
-WantedBy=timers.target
+UMask=0027

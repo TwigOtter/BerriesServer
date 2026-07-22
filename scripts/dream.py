@@ -191,8 +191,10 @@ async def _update_about(user: dict, interactions: list[str]) -> str | None:
         f"that haven't come up again. Prioritize durable traits — personality, recurring interests, "
         f"fursona details, relationship to the stream — over passing chatter. The blurb should not grow "
         f"longer over time; if anything, it should get tighter as patterns emerge.\n\n"
-        f"No preamble, just the blurb — it goes straight into the database. If today's interactions add "
-        f"nothing meaningful, you may tighten the existing blurb or return it unchanged."
+        f"No preamble, just the blurb — it goes straight into the database. Do not repeat the "
+        f"Name/Species/Pronouns header lines above; those are stored separately, and the blurb is "
+        f"prose only. If today's interactions add nothing meaningful, you may tighten the existing "
+        f"blurb or return it unchanged."
     )
     system = (
         "As part of a nightly process, you review Twitch and Discord user interactions with an AI chatbot named Berries. "
@@ -207,10 +209,25 @@ async def _update_about(user: dict, interactions: list[str]) -> str | None:
             max_tokens=300,
             model=ANTHROPIC_ASSIST_MODEL,
         )
-        return result.strip()
+        return _strip_profile_header(result.strip())
     except Exception:
         log.exception("Failed to generate about blurb for %s", name)
         return None
+
+
+def _strip_profile_header(blurb: str) -> str:
+    """
+    Drop leading Name:/Species:/Pronouns: lines from a generated blurb.
+
+    format_user_context() already emits those as structured fields, and once
+    they leak into `about` they self-perpetuate — each nightly rewrite sees
+    them in "Current about blurb" and keeps them. Stripping at write both
+    prevents that and heals already-dirty rows on their next rewrite.
+    """
+    lines = blurb.splitlines()
+    while lines and re.match(r"^(Name|Species|Pronouns)\s*:", lines[0].strip(), re.IGNORECASE):
+        lines.pop(0)
+    return "\n".join(lines).strip()
 
 
 async def phase_user_memory(date_str: str) -> int:

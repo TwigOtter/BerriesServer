@@ -25,6 +25,7 @@ from shared.context_providers import (
     BerriesRequest,
     ChannelHistoryProvider,
     ChromaContextProvider,
+    LoreProvider,
     RecentChunksProvider,
     UserProfileProvider,
     build_context,
@@ -36,13 +37,22 @@ from shared.interaction_log import log_interaction
 log = logging.getLogger(__name__)
 
 # Context blocks per platform, in prompt order. Adding a new context source
-# (lore, server rules, ...) means adding a provider here, not a new pipeline.
+# (server rules, tool results, ...) means adding a provider here, not a new
+# pipeline.
+#
+# LoreProvider leads on both platforms so personality + character facts open
+# the prompt the same way wherever Berries is invoked. It retrieves from the
+# dedicated lore collection (recall-oriented, no rerank) — see the provider's
+# docstring and berries_bot/lore/README.md for why lore does not share the
+# transcript retrieval pool.
 _TWITCH_PROVIDERS = [
+    LoreProvider(),
     ChromaContextProvider(),
     UserProfileProvider(),
     RecentChunksProvider(),
 ]
 _DISCORD_MENTION_PROVIDERS = [
+    LoreProvider(),
     ChromaContextProvider(),
     UserProfileProvider(),
     ChannelHistoryProvider(),
@@ -161,6 +171,9 @@ async def ask_berries_twitch(
             display_name=nickname or username or "a viewer",
             t_login=username or None,
             recent_context=recent_buffer_text,
+            # Twitch buffer text is multi-user chat, not dominated by Berries'
+            # own replies, so it serves as the lore query unfiltered.
+            lore_context=recent_buffer_text,
             recent_chunks=[c["text"] for c in recent_chunks],
         )
         context = await build_context(_TWITCH_PROVIDERS, req)
@@ -187,6 +200,7 @@ async def ask_berries_discord_mention(
     display_name: str,
     discord_id: str,
     channel_history: str,
+    recent_user_messages: str = "",
 ) -> str | None:
     """
     Full Discord @mention pipeline.
@@ -195,10 +209,12 @@ async def ask_berries_discord_mention(
     assembles the system prompt, calls the LLM, cleans the response, and logs.
 
     Args:
-        query:           Raw message content (with @mention token already replaced).
-        display_name:    Discord display name shown in the user_message to Berries.
-        discord_id:      Discord user ID string; used for nickname lookup in user_db.
-        channel_history: Pre-fetched formatted channel history string (from _get_channel_history).
+        query:                Raw message content (with @mention token already replaced).
+        display_name:         Discord display name shown in the user_message to Berries.
+        discord_id:           Discord user ID string; used for nickname lookup in user_db.
+        channel_history:      Pre-fetched formatted channel history string (from _get_channel_history).
+        recent_user_messages: Recent channel messages with Berries' own excluded;
+                              drives the lore query so his voice doesn't steer lore retrieval.
     """
     with trace.trace("discord_mention", username=display_name, discord_id=discord_id, query=query):
         with trace.step("nickname_lookup"):
@@ -211,6 +227,7 @@ async def ask_berries_discord_mention(
             discord_id=discord_id,
             # channel_history doubles as recency context for query rewriting
             recent_context=channel_history,
+            lore_context=recent_user_messages,
             channel_history=channel_history,
         )
         context = await build_context(_DISCORD_MENTION_PROVIDERS, req)

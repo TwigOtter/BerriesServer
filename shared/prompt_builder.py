@@ -72,14 +72,31 @@ def _chunk_header(meta: dict) -> str:
     return f"[Stream: {' - '.join(parts)}]" if parts else "[Stream]"
 
 
+def format_lore(docs: list[tuple[str, dict]]) -> str:
+    """Wrap retrieved lore entries (curated character facts) for the system prompt."""
+    formatted = "\n---\n".join(doc for doc, _meta in docs)
+    return (
+        "CHARACTER FACTS:\n"
+        "Canon facts about you, recalled because they may relate to this "
+        "conversation. They are true and settled — speak from them as your own "
+        "memory, and use them rather than improvising new details. Not every "
+        "fact recalled will be relevant; quietly ignore the ones that are not. "
+        "If asked about a specific detail of your life that neither these facts "
+        "nor your personality cover, do not invent one: be spookily vague "
+        "instead.\n"
+        + formatted
+    )
+
+
 def format_chroma_context(docs: list[tuple[str, dict]]) -> str:
     """Wrap ChromaDB results with standard framing for injection into the system prompt."""
     formatted = [f"{_chunk_header(meta)}\n{doc}" for doc, meta in docs]
     return (
         "RELEVANT PAST CONTEXT:\n"
-        "The following excerpts from past stream logs and your own lore notes may be "
-        "relevant to the conversation. Lore entries are canon facts about you. "
-        "Use them to inform your response if helpful — do not quote them directly.\n"
+        "The following excerpts from past stream logs may be relevant to the "
+        "conversation. They are recollections of things that happened, not canon "
+        "character facts. Use them to inform your response if helpful — do not "
+        "quote them directly.\n"
         + "\n---\n".join(formatted)
     )
 

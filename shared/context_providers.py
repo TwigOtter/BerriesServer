@@ -12,16 +12,21 @@ touching the pipelines themselves.
 """
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Protocol
 
 from shared import trace
+from shared.chroma_client import query_lore_multi
 from shared.prompt_builder import (
     format_chroma_context,
+    format_lore,
     format_recent_chunks,
     format_user_context,
 )
 from shared.retrieval import retrieve_context
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -33,6 +38,7 @@ class BerriesRequest:
     t_login: str | None = None      # Twitch login, for user_db lookups
     discord_id: str | None = None   # Discord snowflake, for user_db lookups
     recent_context: str = ""        # free-text recency context for query rewriting
+    lore_context: str = ""          # recent conversation for the lore query, with Berries' own messages excluded
     recent_chunks: list[str] = field(default_factory=list)  # flushed chunk texts
     channel_history: str = ""       # pre-formatted Discord channel history block
 
@@ -40,6 +46,48 @@ class BerriesRequest:
 class ContextProvider(Protocol):
     name: str
     async def provide(self, req: BerriesRequest) -> str | None: ...
+
+
+class LoreProvider:
+    """
+    Curated character facts (berries_bot/lore/facts.md), retrieved from the
+    dedicated lore-only ChromaDB collection.
+
+    Recall-oriented on purpose. When lore competed with ~9k transcript chunks
+    for the shared retrieval slots, entries reached the prompt for only about
+    half the questions they answered — and on a miss the model does not
+    deflect, it invents a confident answer (3/6 vs 5/6 on the fabrication
+    check; berries_bot/lore/README.md, 2026-07-15). So lore gets its own
+    collection, a generous top-n, a lenient distance threshold, and no
+    reranking: an irrelevant-but-true fact in the prompt is cheap, a missing
+    fact becomes a fabrication.
+
+    Queries are the raw message plus recent conversation, unrewritten — the
+    assist-model rewrite earns its keep finding needles in ~9k noisy chunks;
+    casting a wide net over ~20 curated entries doesn't need it. The
+    conversation query is `lore_context`, not `recent_context`: Berries' own
+    messages are excluded, because embedding his replies steers lore retrieval
+    toward whatever devices he has already been leaning on (his mushroom-heavy
+    voice kept re-retrieving mushroom lore — a feedback loop).
+
+    Runs first so personality + facts lead the prompt.
+    """
+
+    name = "lore"
+
+    async def provide(self, req: BerriesRequest) -> str | None:
+        queries = [q for q in (req.query, req.lore_context) if q.strip()]
+        if not queries:
+            return None
+        try:
+            docs = await asyncio.to_thread(query_lore_multi, queries)
+        except Exception:
+            log.exception("Lore retrieval failed (no character facts injected)")
+            return None
+        if not docs:
+            return None
+        trace.add(lore_injected=[meta.get("title", "?") for _doc, meta in docs])
+        return format_lore(docs)
 
 
 class ChromaContextProvider:

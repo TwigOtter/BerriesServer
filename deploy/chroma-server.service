@@ -36,7 +36,7 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 # NOTE: deny list (`~@privileged @resources`) omitted — see berries-ingest
 # for context (PyTorch/sentence-transformers needs syscalls in @resources).
-UMask=0077
+UMask=0027
 
 [Install]
 WantedBy=multi-user.target

@@ -25,7 +25,7 @@ DATA_DIR = BASE_DIR / "data"
 TRANSCRIPTS_DIR = DATA_DIR / "transcripts"
 CHROMADB_DIR = DATA_DIR / "chromadb"
 LOGS_DIR = BASE_DIR / "logs"
-PERSONALITY_FILE = BASE_DIR / "berries_bot" / "personality.txt"
+PERSONALITY_FILE = BASE_DIR / "berries_bot" / "personality-slim.txt"
 
 # ── ingest_api ─────────────────────────────────────────────────────────────
 INGEST_HOST = os.getenv("INGEST_HOST", "0.0.0.0")
@@ -39,8 +39,23 @@ CHUNK_OVERLAP_SEC = int(os.getenv("CHUNK_OVERLAP_SEC", "30"))    # keep last 30s
 
 # ── ChromaDB ───────────────────────────────────────────────────────────────
 CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "stream_transcripts")
-CHROMA_N_RESULTS = int(os.getenv("CHROMA_N_RESULTS", "4"))       # chunks to retrieve per query
+CHROMA_N_RESULTS = int(os.getenv("CHROMA_N_RESULTS", "3"))       # chunks to retrieve per query
 CHROMA_L2_THRESHOLD = float(os.getenv("CHROMA_L2_THRESHOLD", "0.8"))  # discard chunks with L2 distance above this
+
+# ── Lore retrieval ─────────────────────────────────────────────────────────
+# Curated character facts (berries_bot/lore/facts.md) live in their own
+# ChromaDB collection with their own slots, so they never compete with the
+# ~9k transcript chunks. Retrieval here is deliberately recall-oriented: a
+# generous top-n and a lenient distance threshold, no reranking — an
+# irrelevant-but-true fact in the prompt is cheap, a missed fact becomes a
+# confident fabrication (see berries_bot/lore/README.md).
+LORE_COLLECTION = os.getenv("LORE_COLLECTION", "berries_lore")
+LORE_N_RESULTS = int(os.getenv("LORE_N_RESULTS", "5"))           # lore entries to retrieve per response
+# Measured 2026-07-22 (scripts/eval_lore.py --distances): relevant hits span
+# L2 0.62-1.24 while greetings already hit 0.91 — no threshold separates the
+# two. 1.5 deliberately admits everything; LORE_N_RESULTS is the real filter,
+# and the format_lore framing tells the model to ignore off-topic facts.
+LORE_L2_THRESHOLD = float(os.getenv("LORE_L2_THRESHOLD", "1.5"))
 
 # ── Retrieval reranking ────────────────────────────────────────────────────
 # After vector search, the assist model scores candidates for relevance to the

@@ -38,7 +38,7 @@ SystemCallFilter=@system-service
 # with SIGSYS because PyTorch/sentence-transformers (pulled in by ChromaDB)
 # call syscalls in @resources during init. The @system-service allowlist alone
 # is already a reasonable tightening; the deny list is omitted deliberately.
-UMask=0077
+UMask=0027
 
 [Install]
 WantedBy=multi-user.target
