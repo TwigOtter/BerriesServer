@@ -1,12 +1,16 @@
 """
 tests/test_lore.py
 
-Tests for the lore file parser in scripts/reindex_lore.py.
+Tests for the lore file parser in scripts/reindex_lore.py, the retrieved-lore
+prompt block, and LoreProvider's retrieval behavior.
 """
 
 from pathlib import Path
 
+import scripts.reindex_lore as reindex_lore
 from scripts.reindex_lore import parse_lore_file
+from shared.context_providers import BerriesRequest, LoreProvider
+from shared.prompt_builder import format_lore
 
 
 def _write(tmp_path: Path, content: str) -> Path:
@@ -44,3 +48,56 @@ def test_heading_slugs_are_safe(tmp_path):
 def test_file_without_sections_yields_nothing(tmp_path):
     path = _write(tmp_path, "just some prose\nwith no headings\n")
     assert parse_lore_file(path) == []
+
+
+def test_readme_and_server_rules_are_not_indexed(tmp_path, monkeypatch):
+    (tmp_path / "facts.md").write_text("## Food\nBerries is a vegetarian.\n", encoding="utf-8")
+    (tmp_path / "server-rules.md").write_text("## Hard Rules\nBe kind.\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("## How it works\ndocs, not lore\n", encoding="utf-8")
+    monkeypatch.setattr(reindex_lore, "LORE_DIR", tmp_path)
+    entries = reindex_lore.collect_entries()
+    assert [e["id"] for e in entries] == ["lore_facts_food"]
+
+
+# ── format_lore ────────────────────────────────────────────────────────────
+
+def test_format_lore_joins_retrieved_entries():
+    docs = [
+        ("Food\nBerries is a vegetarian.", {"source": "lore", "title": "Food"}),
+        ("Fear of water\nRunning water weakens Berries.", {"source": "lore", "title": "Fear of water"}),
+    ]
+    block = format_lore(docs)
+    assert block.startswith("CHARACTER FACTS:")
+    assert "Berries is a vegetarian." in block
+    assert "Running water weakens Berries." in block
+    assert "\n---\n" in block
+
+
+# ── LoreProvider ───────────────────────────────────────────────────────────
+
+class TestLoreProvider:
+    async def test_queries_with_message_and_recent_context(self, monkeypatch):
+        seen: list[list[str]] = []
+
+        def fake_query(queries):
+            seen.append(queries)
+            return [("Food\nBerries is a vegetarian.", {"source": "lore", "title": "Food"})]
+
+        monkeypatch.setattr("shared.context_providers.query_lore_multi", fake_query)
+        req = BerriesRequest(query="what do you eat?", recent_context="chat about dinner")
+        block = await LoreProvider().provide(req)
+        assert seen == [["what do you eat?", "chat about dinner"]]
+        assert "Berries is a vegetarian." in block
+
+    async def test_no_hits_yields_no_block(self, monkeypatch):
+        monkeypatch.setattr("shared.context_providers.query_lore_multi", lambda queries: [])
+        block = await LoreProvider().provide(BerriesRequest(query="hello"))
+        assert block is None
+
+    async def test_query_failure_degrades_to_no_block(self, monkeypatch):
+        def boom(queries):
+            raise RuntimeError("chroma down")
+
+        monkeypatch.setattr("shared.context_providers.query_lore_multi", boom)
+        block = await LoreProvider().provide(BerriesRequest(query="hello"))
+        assert block is None

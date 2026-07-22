@@ -7,38 +7,50 @@ kept out of `personality.txt` but still reliably available to Berries.
 
 | File | How Berries gets it |
 |------|---------------------|
-| `facts.md` | **Retrieved via ordinary vector search**, competing with transcript chunks for the same `CHROMA_N_RESULTS` slots. Indexed as `source: "lore"` by `scripts/reindex_lore.py`; run it after editing. |
-| `server-rules.md` | Read on demand by the `get_server_rules()` agent tool (`shared/tools.py`). Discord only — the tool loop is Discord-only. |
+| `facts.md` | **Retrieved from a dedicated lore-only ChromaDB collection** (`LORE_COLLECTION`) by `LoreProvider`, first in every pipeline's provider list. Indexed by `scripts/reindex_lore.py`; run it after editing. |
+| `server-rules.md` | Read on demand by the `get_server_rules()` agent tool (`shared/tools.py`). Discord only — the tool loop is Discord-only. **Never indexed as lore** (excluded in `reindex_lore.py`). |
 
-## ⚠️ Interim state — this is knowingly the worse of two options
+## Current design (2026-07-22): dedicated collection, recall-oriented
 
-`facts.md` **is not currently injected.** `LoreProvider` still exists in
-`shared/context_providers.py` but is wired into no pipeline, and the
-`source: "lore"` exclusion in `chroma_client.query_chroma_multi` has been
-lifted, so lore competes in the shared pool again. Per the measurement below,
-that is **3/6 on the fabrication check, down from 5/6.** Expect Berries to
-confidently invent character details he misses.
+Lore has its own ChromaDB collection with its own slots — it never enters
+the similarity contest against ~9k transcript chunks that the 2026-07-15
+measurement identified as the failure mechanism. Paired with a slimmed
+`personality.txt` carrying only the foundational character voice.
 
-This was accepted deliberately (2026-07-15) for two reasons:
+The retrieval knobs (`shared/config.py`) are deliberately recall-oriented,
+because the failure modes are wildly asymmetric — a false positive is a
+paragraph of irrelevant-but-true lore in the prompt, a false negative is a
+confidently fabricated character detail:
 
-1. `facts.md` and `personality.txt` overlap substantially (~36% shared
-   vocabulary), so injecting both duplicated content.
-2. Most of `facts.md` is irrelevant to most queries — "Good morning Berries!"
-   does not need "Berries and Mirth" or "The Dark Visitor".
+- `LORE_N_RESULTS` (default 6) — generous top-n over ~20 entries
+- `LORE_L2_THRESHOLD` (default 1.5) — lenient; prune clear non-matches only
+- **No reranking** — the reranker's abstain path is precision-oriented,
+  the wrong tool for this pool
+- Queries are the raw message + recent conversation context, **unrewritten** —
+  the assist-model rewrite earns its keep against noisy transcripts; a
+  20-entry curated pool doesn't need it
 
-**The planned fix is a dedicated lore-only ChromaDB query with its own top-n,
-separate from the transcript pool.** That addresses the actual mechanism the
-measurement identified: lore doesn't lose a similarity contest it never
-enters. Pair it with a slimmed `personality.txt` carrying only the
-foundational character voice.
+Validated 2026-07-22 with `scripts/eval_lore.py`:
 
-Until then, prefer restoring injection over shipping the interim long-term —
-the numbers below are unambiguous about which is more accurate.
+1. **Distances (`--distances`): no separating threshold exists.** Expected
+   entries span L2 0.62–1.24 ("do you have a girlfriend?" needs 1.24 to reach
+   love-and-romance) while "good morning berries!" already scores 0.91 against
+   comfort-and-downtime. Any threshold tight enough to filter greetings prunes
+   real answers, so 1.5 deliberately admits everything — `LORE_N_RESULTS` is
+   the real filter, plus the format_lore instruction to ignore off-topic
+   facts. Re-run after lore edits; if the pool grows much past ~30 entries,
+   revisit.
+2. **Fabrication check (`--fabrication`): 6/6, up from 5/6 under injection
+   and 3/6 under shared-pool retrieval.** The expected lore entry ranked
+   first for every question. Two answers ("The Ledger", cloudberries) looked
+   like fabrications but grep'd out as legitimate recollections from stream
+   transcripts — verify against transcripts before failing an answer.
 
 ## Design note: separate collection, not a `where` filter (2026-07-15)
 
-The lore-only query should target its **own ChromaDB collection**, not the
-shared collection with `where={"source": "lore"}`.
+The lore-only query targets its **own ChromaDB collection**
+(`get_lore_collection()` / `query_lore_multi()` in `shared/chroma_client.py`),
+not the shared collection with `where={"source": "lore"}`.
 
 Benchmarked against the live 9,082-doc index, per query:
 
@@ -61,12 +73,11 @@ embedding is 74% of what remains. Don't pick on latency; it's noise either way.
 
 The actual reasons:
 
-1. **Blast radius.** `reindex_lore.py` currently upserts and deletes *inside*
-   the shared 9k-doc collection (see its `where={"source": "lore"}` diff), so
-   every lore edit writes to the index holding all transcripts. A separate
-   collection makes a rebuild `delete_collection()` + recreate, and the
-   transcript index is never opened for writing. Transcripts are rebuildable
-   from JSONL, but that's hours of re-embedding.
+1. **Blast radius.** Lore used to be upserted and deleted *inside* the shared
+   9k-doc collection, so every lore edit wrote to the index holding all
+   transcripts. With a separate collection the transcript index is never
+   opened for writing by lore edits. Transcripts are rebuildable from JSONL,
+   but that's hours of re-embedding.
 2. **It's the mechanism fix.** Own collection + own top-n means lore never
    enters the similarity contest it was measured losing. The filter doesn't
    give you that.
@@ -80,10 +91,10 @@ default embedder raises no error — it silently returns garbage rankings.
 Create it through the singleton in `shared/chroma_client.py`, never a fresh
 `Client()`, and consider asserting the embedding dimensionality on startup.
 
-## Why injection beat retrieval (measured 2026-07-15)
+## Why injection beat *shared-pool* retrieval (measured 2026-07-15)
 
-Retrieval was the failure mode, not the fix. Measured against the live index
-(2026-07-15):
+Shared-pool retrieval was the failure mode the current design responds to.
+Measured against the live index (2026-07-15):
 
 - The ~20 lore entries reached the prompt for only about **half** the
   questions they answered — they lose the embedding similarity contest

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from shared import trace
-from shared.config import LORE_FACTS_FILE
+from shared.chroma_client import query_lore_multi
 from shared.prompt_builder import (
     format_chroma_context,
     format_lore,
@@ -49,30 +49,40 @@ class ContextProvider(Protocol):
 
 class LoreProvider:
     """
-    Curated character facts (berries_bot/lore/facts.md), injected verbatim into
-    every personality prompt.
+    Curated character facts (berries_bot/lore/facts.md), retrieved from the
+    dedicated lore-only ChromaDB collection.
 
-    Not retrieved: the whole file is ~2k tokens, small enough to always carry,
-    and retrieval was the failure mode. Measured against the live index, the
-    ~20 lore entries reached the prompt for only about half of the questions
-    they answered — they lose the similarity contest against ~9k transcript
-    chunks. On a miss the model does not deflect (personality.txt's "be
-    spookily vague" rule only fires for things Berries *wouldn't* know — his
-    own bandana isn't one), it invents a confident answer instead. Always
-    injecting took a 6-question fabrication check from 3/6 accurate to 5/6.
+    Recall-oriented on purpose. When lore competed with ~9k transcript chunks
+    for the shared retrieval slots, entries reached the prompt for only about
+    half the questions they answered — and on a miss the model does not
+    deflect, it invents a confident answer (3/6 vs 5/6 on the fabrication
+    check; berries_bot/lore/README.md, 2026-07-15). So lore gets its own
+    collection, a generous top-n, a lenient distance threshold, and no
+    reranking: an irrelevant-but-true fact in the prompt is cheap, a missing
+    fact becomes a fabrication.
 
-    Runs first so personality + facts form one stable prefix ahead of the
-    per-request blocks.
+    Queries are the raw message plus recent conversation context, unrewritten —
+    the assist-model rewrite earns its keep finding needles in ~9k noisy
+    chunks; casting a wide net over ~20 curated entries doesn't need it.
+
+    Runs first so personality + facts lead the prompt.
     """
 
     name = "lore"
 
     async def provide(self, req: BerriesRequest) -> str | None:
-        if not LORE_FACTS_FILE.exists():
-            log.warning("lore facts file not found (%s) — no character facts injected", LORE_FACTS_FILE)
+        queries = [q for q in (req.query, req.recent_context) if q.strip()]
+        if not queries:
             return None
-        text = LORE_FACTS_FILE.read_text(encoding="utf-8").strip()
-        return format_lore(text) if text else None
+        try:
+            docs = await asyncio.to_thread(query_lore_multi, queries)
+        except Exception:
+            log.exception("Lore retrieval failed (no character facts injected)")
+            return None
+        if not docs:
+            return None
+        trace.add(lore_injected=[meta.get("title", "?") for _doc, meta in docs])
+        return format_lore(docs)
 
 
 class ChromaContextProvider:

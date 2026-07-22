@@ -72,16 +72,19 @@ def _chunk_header(meta: dict) -> str:
     return f"[Stream: {' - '.join(parts)}]" if parts else "[Stream]"
 
 
-def format_lore(lore: str) -> str:
-    """Wrap the curated character facts (facts.md) for the system prompt."""
+def format_lore(docs: list[tuple[str, dict]]) -> str:
+    """Wrap retrieved lore entries (curated character facts) for the system prompt."""
+    formatted = "\n---\n".join(doc for doc, _meta in docs)
     return (
         "CHARACTER FACTS:\n"
-        "Canon facts about you. These are true and settled — speak from them as "
-        "your own memory. If someone asks about something in here, use it rather "
-        "than improvising a new detail. If they ask about something that is NOT "
-        "in here and not in your personality, you do not know it: be spookily "
-        "vague rather than inventing an answer.\n"
-        + lore
+        "Canon facts about you, recalled because they may relate to this "
+        "conversation. They are true and settled — speak from them as your own "
+        "memory, and use them rather than improvising new details. Not every "
+        "fact recalled will be relevant; quietly ignore the ones that are not. "
+        "If asked about a specific detail of your life that neither these facts "
+        "nor your personality cover, do not invent one: be spookily vague "
+        "instead.\n"
+        + formatted
     )
 
 
