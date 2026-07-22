@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 import discord
 from discord.ext import commands
 
+from discord_bot.utils import resolve_discord_tags
 from shared.ask_berries import ask_berries_discord_mention
 from shared.config import (
     DISCORD_BERRIES_CHANNEL_WHITELIST_IDS,
@@ -76,15 +77,14 @@ class MentionCog(commands.Cog):
         try:
             messages = [m async for m in channel.history(limit=limit, before=before)]
             messages.reverse()
-            lines = [
-                f"{m.author.display_name}: {m.content}"
+            entries = [
+                (m, f"{m.author.display_name}: {resolve_discord_tags(m, bot_user=self.bot.user)}")
                 for m in messages
                 if m.content
             ]
+            lines = [line for _m, line in entries]
             user_lines = [
-                f"{m.author.display_name}: {m.content}"
-                for m in messages
-                if m.content and m.author != self.bot.user
+                line for m, line in entries if m.author != self.bot.user
             ][-user_lines_limit:]
             # Trim from oldest until estimated token count fits
             char_budget = max_tokens * 4
@@ -122,12 +122,9 @@ class MentionCog(commands.Cog):
         if not mentioned:
             return
 
-        content = (
-            message.content
-            .replace(f"<@{self.bot.user.id}>", "@BerriesTheDemon")
-            .replace(f"<@!{self.bot.user.id}>", "@BerriesTheDemon")
-            .strip()
-        )
+        # Resolves the bot's own mention to @BerriesTheDemon and any other
+        # user/role/channel/emoji tags to readable names.
+        content = resolve_discord_tags(message, bot_user=self.bot.user).strip()
         if not content:
             log.debug("Ignoring empty message from %s in channel %s", message.author, message.channel.id)
             return

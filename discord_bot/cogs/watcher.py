@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 import discord
 from discord.ext import commands
 
+from discord_bot.utils import resolve_discord_tags
 from shared.chroma_client import get_collection
 from shared.config import (
     CHUNK_TOKEN_LIMIT,
@@ -47,9 +48,11 @@ class WatcherCog(commands.Cog):
 
         channel_id = message.channel.id
         buf = self._buffers.setdefault(channel_id, [])
+        # Resolve <@id>-style tags before indexing — chunks are read back by
+        # the LLM, which cannot map snowflakes to people.
         buf.append({
             "source": message.author.display_name,
-            "text": f"[{message.author.display_name}]: {message.content}",
+            "text": f"[{message.author.display_name}]: {resolve_discord_tags(message, bot_user=self.bot.user)}",
             "timestamp": message.created_at.timestamp(),
         })
         log.debug("Watch buffer #%s: %d entries", channel_id, len(buf))
