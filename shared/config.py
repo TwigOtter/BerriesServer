@@ -64,6 +64,17 @@ LORE_L2_THRESHOLD = float(os.getenv("LORE_L2_THRESHOLD", "1.5"))
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() in ("1", "true", "yes")
 RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "12"))    # vector hits fed to the reranker
 RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "5"))     # 0-10; below this a chunk is dropped
+
+# ── Retrieval windowing ────────────────────────────────────────────────────
+# After reranking, each kept chunk (~480 tokens) is cut down to its most
+# query-relevant slice before injection: sliding windows of whole chat lines
+# (~WINDOW_TOKEN_LIMIT tokens each, ~50% overlap) are embedded and scored by
+# L2 distance against the raw message; the best window merged with its
+# better-scoring neighbour (~150 tokens) is what gets injected. Keeps the
+# chroma block near ~600 tokens instead of ~1600 so the full system prompt
+# fits the 4096-token budget. See shared/windowing.py.
+WINDOW_ENABLED = os.getenv("WINDOW_ENABLED", "true").lower() in ("1", "true", "yes")
+WINDOW_TOKEN_LIMIT = int(os.getenv("WINDOW_TOKEN_LIMIT", "100"))  # per-window budget; stride is half this
 # Address of the chroma-server.service (see deploy/chroma-server.service).
 CHROMA_HOST = os.getenv("CHROMA_HOST", "127.0.0.1")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8001"))

@@ -121,6 +121,20 @@ def get_lore_collection():
     return _lore_collection
 
 
+def embed_documents(texts: list[str]) -> list[np.ndarray]:
+    """
+    Embed texts on the 'search_document:' side of nomic's asymmetric pair —
+    the same path chunk documents take at index time. Used by
+    shared/windowing.py to score sub-chunk windows against a query.
+    """
+    return _embedding_function()(texts)
+
+
+def embed_query(text: str) -> np.ndarray:
+    """Embed one query on the 'search_query:' side of the asymmetric pair."""
+    return _embedding_function().embed_query([text])[0]
+
+
 def upsert_summary(chunk_id: str, text: str, metadata: dict) -> None:
     """Write or overwrite a source:summary entry in ChromaDB."""
     collection = get_collection()

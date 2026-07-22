@@ -10,7 +10,10 @@ Pipeline (retrieve_context):
   3. rerank_chunks — assist-model relevance scoring over the candidates;
      keeps the best CHROMA_N_RESULTS above RERANK_MIN_SCORE and may return
      nothing at all (abstain) when no candidate is actually relevant
-  4. log_retrieval — records the final injected chunks for the nightly
+  4. shrink_docs (shared/windowing.py) — cuts each kept chunk down to its
+     most query-relevant ~150-token window so the injected block fits the
+     system-prompt token budget
+  5. log_retrieval — records the final injected excerpts for the nightly
      dreaming summarization and for scripts/eval_retrieval.py
 
 Reranking exists because vector similarity is recall-oriented: a chunk that
@@ -31,11 +34,14 @@ from shared.config import (
     RERANK_CANDIDATES,
     RERANK_ENABLED,
     RERANK_MIN_SCORE,
+    WINDOW_ENABLED,
 )
 from shared import trace
 from shared.chroma_client import query_chroma_multi
 from shared.llm_client import get_completion
 from shared.retrieval_log import log_retrieval
+from shared.tokenizer import count_tokens
+from shared.windowing import shrink_docs
 
 log = logging.getLogger(__name__)
 
@@ -171,6 +177,13 @@ async def retrieve_context(
                 s["kept"] = len(docs)
         else:
             docs = candidates[:CHROMA_N_RESULTS]
+
+        if WINDOW_ENABLED and docs:
+            # shrink_docs makes blocking embedding HTTP calls — off the loop.
+            with trace.step("window") as s:
+                s["tokens_before"] = sum(count_tokens(doc) for doc, _ in docs)
+                docs = await asyncio.to_thread(shrink_docs, query, docs)
+                s["tokens_after"] = sum(count_tokens(doc) for doc, _ in docs)
 
         # Record what was actually injected, keyed by the original message —
         # feeds the nightly dream summarization and the retrieval eval harness.

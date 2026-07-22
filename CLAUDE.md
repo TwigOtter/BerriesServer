@@ -47,7 +47,8 @@ Streamer.bot → ingest_api (8000) → ChromaDB + SQLite + JSONL transcripts
 ### Shared Libraries (`shared/`)
 - `ask_berries.py` — LLM hub; all response pipelines live here (nickname lookup, retrieval, prompt assembly, logging). Each pipeline runs inside a `shared/trace.py` trace.
 - `trace.py` / `logging_setup.py` — Observability: per-interaction traces (step timings, LLM/tool calls, prompts) written to `logs/traces/*.jsonl` + one consistent root-logger config for all services. Inspect traces with `python scripts/traces.py`; see `docs/observability.md`.
-- `retrieval.py` — RAG retrieval stage: query rewriting → multi-query vector search → assist-model reranking (with abstain) → retrieval logging. Searches transcripts/summaries/Discord; lore is retrieved separately by `LoreProvider` from its own collection.
+- `retrieval.py` — RAG retrieval stage: query rewriting → multi-query vector search → assist-model reranking (with abstain) → window selection → retrieval logging. Searches transcripts/summaries/Discord; lore is retrieved separately by `LoreProvider` from its own collection.
+- `windowing.py` — Post-rerank window selection: each kept chunk is cut to its most query-relevant ~150-token slice (sliding windows over whole chat lines, embedded and scored by L2 distance, best window merged with its better neighbor) so the injected block fits the system-prompt budget.
 - `context_providers.py` — Composable system-prompt blocks (`LoreProvider`, `ChromaContextProvider`, `UserProfileProvider`, `RecentChunksProvider`, `ChannelHistoryProvider`). Pipelines in `ask_berries.py` compose a list per platform; both platforms lead with `LoreProvider` so the prompt is the same wherever Berries is invoked.
 - `prompt_builder.py` — Assembles system prompts from personality + context formatters + per-ContextType instructions.
 - `config.py` — All config from `.env`; every service imports from here.
@@ -67,6 +68,7 @@ Copy `.env.example` to `.env`. Key variables:
 - `CHUNK_TOKEN_LIMIT=480`, `CHUNK_TIMEOUT_SEC=300`, `CHROMA_N_RESULTS=3`
 - `LORE_COLLECTION=berries_lore`, `LORE_N_RESULTS=6`, `LORE_L2_THRESHOLD=1.5` — recall-oriented lore retrieval (`LoreProvider`); see `berries_bot/lore/README.md`
 - `RERANK_ENABLED=true`, `RERANK_CANDIDATES=12`, `RERANK_MIN_SCORE=5` — assist-model reranking of retrieval candidates (`shared/retrieval.py`); measure with `python scripts/eval_retrieval.py`
+- `WINDOW_ENABLED=true`, `WINDOW_TOKEN_LIMIT=100` — post-rerank window selection (`shared/windowing.py`): shrink each injected chunk to its best ~150-token window
 - `AGENT_TOOLS_ENABLED=false` — experimental tool-use loop for Discord mentions (`shared/agent.py`, `shared/tools.py`); see `docs/agent-tools.md` before enabling
 - `TRACE_ENABLED=true` — per-interaction traces in `logs/traces/YYYY-MM-DD.jsonl` (step timings, LLM token usage, full prompts); inspect with `python scripts/traces.py`
 
