@@ -50,7 +50,7 @@ CHROMA_L2_THRESHOLD = float(os.getenv("CHROMA_L2_THRESHOLD", "0.8"))  # discard 
 # irrelevant-but-true fact in the prompt is cheap, a missed fact becomes a
 # confident fabrication (see berries_bot/lore/README.md).
 LORE_COLLECTION = os.getenv("LORE_COLLECTION", "berries_lore")
-LORE_N_RESULTS = int(os.getenv("LORE_N_RESULTS", "6"))           # lore entries to retrieve per response
+LORE_N_RESULTS = int(os.getenv("LORE_N_RESULTS", "5"))           # lore entries to retrieve per response
 # Measured 2026-07-22 (scripts/eval_lore.py --distances): relevant hits span
 # L2 0.62-1.24 while greetings already hit 0.91 — no threshold separates the
 # two. 1.5 deliberately admits everything; LORE_N_RESULTS is the real filter,
