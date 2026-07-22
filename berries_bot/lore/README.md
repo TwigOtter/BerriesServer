@@ -26,9 +26,12 @@ confidently fabricated character detail:
 - `LORE_L2_THRESHOLD` (default 1.5) — lenient; prune clear non-matches only
 - **No reranking** — the reranker's abstain path is precision-oriented,
   the wrong tool for this pool
-- Queries are the raw message + recent conversation context, **unrewritten** —
-  the assist-model rewrite earns its keep against noisy transcripts; a
-  20-entry curated pool doesn't need it
+- Queries are the raw message + recent conversation, **unrewritten** — the
+  assist-model rewrite earns its keep against noisy transcripts; a 20-entry
+  curated pool doesn't need it. The conversation query **excludes Berries'
+  own messages** (`lore_context`): embedding his replies steers lore
+  retrieval toward whatever devices he's already leaning on — a
+  voice-narrowing feedback loop observed 2026-07-22
 
 Validated 2026-07-22 with `scripts/eval_lore.py`:
 

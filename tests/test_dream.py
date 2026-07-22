@@ -49,3 +49,15 @@ def test_ignores_non_log_files_and_subdirs(tmp_path):
 def test_missing_directory_returns_empty(tmp_path):
     with patch.object(dream, "_INTERACTIONS_DIR", tmp_path / "does-not-exist"):
         assert dream._unarchived_dates("2026-06-11") == ([], [])
+
+
+# ── _strip_profile_header ──────────────────────────────────────────────────
+
+def test_strip_profile_header_removes_leaked_fields():
+    blurb = "Name: Twig\nSpecies: otter\nPronouns: he/him\n\nTwig is an otter with rotating hyperfixations."
+    assert dream._strip_profile_header(blurb) == "Twig is an otter with rotating hyperfixations."
+
+
+def test_strip_profile_header_leaves_clean_blurbs_alone():
+    blurb = "Twig is an otter. His species: otter, is important to him."
+    assert dream._strip_profile_header(blurb) == blurb

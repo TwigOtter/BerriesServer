@@ -59,10 +59,19 @@ class MentionCog(commands.Cog):
         before: discord.Message,
         limit: int = 20,
         max_tokens: int = 1028,
-    ) -> str:
+        user_lines_limit: int = 6,
+    ) -> tuple[str, str]:
         """
-        Fetch the last `limit` messages from `channel` before `message` and format them.
-        Trims oldest messages until the block is under `max_tokens` (estimated at 4 chars/token).
+        Fetch the last `limit` messages from `channel` before `message`.
+
+        Returns (history_block, recent_user_messages):
+          history_block:        all messages, formatted for the prompt; trimmed
+                                oldest-first until under `max_tokens` (estimated
+                                at 4 chars/token).
+          recent_user_messages: the last `user_lines_limit` non-bot messages,
+                                plain lines. Used as the lore retrieval query —
+                                Berries' own messages are excluded so his voice
+                                doesn't steer which lore comes back.
         """
         try:
             messages = [m async for m in channel.history(limit=limit, before=before)]
@@ -72,16 +81,20 @@ class MentionCog(commands.Cog):
                 for m in messages
                 if m.content
             ]
+            user_lines = [
+                f"{m.author.display_name}: {m.content}"
+                for m in messages
+                if m.content and m.author != self.bot.user
+            ][-user_lines_limit:]
             # Trim from oldest until estimated token count fits
             char_budget = max_tokens * 4
             while lines and sum(len(l) for l in lines) > char_budget:
                 lines.pop(0)
-            if not lines:
-                return ""
-            return format_channel_history(lines)
+            history = format_channel_history(lines) if lines else ""
+            return history, "\n".join(user_lines)
         except Exception:
             log.exception("Failed to fetch channel history for channel %s", channel.id)
-            return ""
+            return "", ""
 
     async def _count_recent_bot_messages(
         self,
@@ -145,12 +158,13 @@ class MentionCog(commands.Cog):
         try:
             t0 = time.perf_counter()
             async with _maybe_typing(message.channel):
-                history = await self._get_channel_history(message.channel, before=message)
+                history, recent_user_messages = await self._get_channel_history(message.channel, before=message)
                 response = await ask_berries_discord_mention(
                     query=content,
                     display_name=message.author.display_name,
                     discord_id=str(message.author.id),
                     channel_history=history,
+                    recent_user_messages=recent_user_messages,
                 )
                 log.debug("LLM response for mention: %.120r", response)
 

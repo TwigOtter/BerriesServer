@@ -76,7 +76,7 @@ def test_format_lore_joins_retrieved_entries():
 # ── LoreProvider ───────────────────────────────────────────────────────────
 
 class TestLoreProvider:
-    async def test_queries_with_message_and_recent_context(self, monkeypatch):
+    async def test_queries_with_message_and_lore_context(self, monkeypatch):
         seen: list[list[str]] = []
 
         def fake_query(queries):
@@ -84,10 +84,28 @@ class TestLoreProvider:
             return [("Food\nBerries is a vegetarian.", {"source": "lore", "title": "Food"})]
 
         monkeypatch.setattr("shared.context_providers.query_lore_multi", fake_query)
-        req = BerriesRequest(query="what do you eat?", recent_context="chat about dinner")
+        req = BerriesRequest(query="what do you eat?", lore_context="chat about dinner")
         block = await LoreProvider().provide(req)
         assert seen == [["what do you eat?", "chat about dinner"]]
         assert "Berries is a vegetarian." in block
+
+    async def test_recent_context_does_not_leak_into_lore_query(self, monkeypatch):
+        """Berries' own messages live in recent_context (channel history) — the
+        lore query must only use lore_context, or his voice steers retrieval."""
+        seen: list[list[str]] = []
+
+        def fake_query(queries):
+            seen.append(queries)
+            return []
+
+        monkeypatch.setattr("shared.context_providers.query_lore_multi", fake_query)
+        req = BerriesRequest(
+            query="hello",
+            recent_context="BerriesTheDemon: The Ledger notes this.",
+            lore_context="",
+        )
+        await LoreProvider().provide(req)
+        assert seen == [["hello"]]
 
     async def test_no_hits_yields_no_block(self, monkeypatch):
         monkeypatch.setattr("shared.context_providers.query_lore_multi", lambda queries: [])
