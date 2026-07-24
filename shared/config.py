@@ -132,6 +132,7 @@ DISCORD_STICKERS_ONLY_CHANNEL_IDS: list[int] = [
 ]
 _rules_sticker_id = os.getenv("DISCORD_RULES_STICKER_ID", "")
 DISCORD_RULES_STICKER_ID: int | None = int(_rules_sticker_id) if _rules_sticker_id else None
+DISCORD_CHANNEL_INTERACTION_LIMIT = int(os.getenv("DISCORD_CHANNEL_INTERACTION_LIMIT", "5"))
 
 # ── Agent tools (experimental) ─────────────────────────────────────────────
 # When enabled, Discord @mention responses run a tool-use loop (Anthropic

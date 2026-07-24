@@ -20,6 +20,7 @@ from shared.config import (
     DISCORD_BERRIES_CHANNEL_WHITELIST_IDS,
     DISCORD_BERRIES_CHAT_CHANNEL_ID,
     DISCORD_STICKERS_ONLY_CHANNEL_IDS,
+    DISCORD_CHANNEL_INTERACTION_LIMIT,
 )
 from shared.interactions_db import log_discord_message
 from shared.prompt_builder import format_channel_history
@@ -151,7 +152,7 @@ class MentionCog(commands.Cog):
             and message.channel.id not in DISCORD_BERRIES_CHANNEL_WHITELIST_IDS
         ):
             bot_count = await self._count_recent_bot_messages(message.channel, before=message)
-            if bot_count >= 2:
+            if bot_count >= DISCORD_CHANNEL_INTERACTION_LIMIT:
                 log.info(
                     "Redirecting %s to berries-chat (%d recent bot messages in channel %s)",
                     message.author, bot_count, message.channel.id,
