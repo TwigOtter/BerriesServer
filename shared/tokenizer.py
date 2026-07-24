@@ -24,6 +24,16 @@ def count_tokens(text: str) -> int:
     return len(_get_enc().encode(text))
 
 
+def encode(text: str) -> list[int]:
+    """Encode a string to token ids (for token-boundary slicing)."""
+    return _get_enc().encode(text)
+
+
+def decode(tokens: list[int]) -> str:
+    """Decode token ids back to a string."""
+    return _get_enc().decode(tokens)
+
+
 def count_tokens_for_messages(messages: list[dict]) -> int:
     """
     Rough token count for a list of message dicts with a 'text' key.

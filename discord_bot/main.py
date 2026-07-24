@@ -26,6 +26,7 @@ from shared.config import (
 )
 from shared.logging_setup import setup_logging
 from shared.movie_db import init_movie_db
+from shared.interactions_db import init_db as init_interactions_db
 from shared.user_db import init_db as init_user_db
 from discord_bot.webhook import create_webhook_app
 
@@ -66,6 +67,7 @@ async def on_ready() -> None:
     try:
         init_user_db()
         init_movie_db()
+        init_interactions_db()
     except Exception:
         log.exception("Failed to initialize databases")
     try:

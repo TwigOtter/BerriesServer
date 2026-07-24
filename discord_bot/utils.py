@@ -66,3 +66,29 @@ def resolve_discord_tags(message, bot_user=None) -> str:
         return f":{match['emoji_name']}:"
 
     return _TAG_RE.sub(_sub, message.content)
+
+
+def message_row(message, bot_user=None, invoked_berries: bool = False) -> dict:
+    """
+    Build log_discord_message() kwargs from a discord.Message
+    (docs/sql-interaction-storage.md Phase 1 dual-write).
+
+    message_text stores the tag-resolved form — the author's identity is
+    preserved structurally in user_id, and resolved text is what downstream
+    consumers (chunker, context queries) want to read.
+    """
+    reference = getattr(message, "reference", None)
+    return dict(
+        guild_id=str(message.guild.id) if message.guild else None,
+        channel_id=str(message.channel.id),
+        channel_name=getattr(message.channel, "name", None),
+        user_id=str(message.author.id),
+        username=message.author.name,
+        display_name=message.author.display_name,
+        message_id=str(message.id),
+        message_text=resolve_discord_tags(message, bot_user=bot_user),
+        reply_to_message_id=str(reference.message_id) if reference and reference.message_id else None,
+        is_bot=bool(getattr(message.author, "bot", False)),
+        invoked_berries=invoked_berries,
+        created_at=message.created_at.isoformat(),
+    )

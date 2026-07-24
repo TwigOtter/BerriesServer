@@ -48,6 +48,7 @@ from shared.config import (
     USERS_DB_PATH,
 )
 from shared.ask_berries import ask_berries_twitch
+from shared.interactions_db import log_twitch_event
 
 def count_tokens(text: str) -> int:
     from shared.tokenizer import count_tokens as _count_tokens
@@ -57,8 +58,10 @@ def count_tokens(text: str) -> int:
 @asynccontextmanager
 async def lifespan(_app):
     from shared.user_db import init_db
+    from shared.interactions_db import init_db as init_interactions_db
     USERS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     init_db()
+    init_interactions_db()
     asyncio.create_task(_flush_timer_loop())
     yield
     # Flush whatever is still buffered so a restart mid-stream doesn't drop
@@ -324,6 +327,34 @@ async def receive_chat(
         t_id=parsed_user_id,
     )
 
+    # Dual-write the raw per-message event (docs/sql-interaction-storage.md
+    # Phase 1). Raw text, not the emote-condensed form — SQL is becoming the
+    # ground truth, and cleanup is a chunker-time decision.
+    if raw_text.strip():
+        await asyncio.to_thread(
+            log_twitch_event,
+            type="message",
+            content=raw_text,
+            user_id=parsed_user_id,
+            username=username,
+            display_name=display_name,
+            stream_title=_stream_metadata["title"],
+            stream_category=_stream_metadata["category"],
+            message_id=msg_id or None,
+            payload={
+                k: v for k, v in {
+                    "role": role_label,
+                    "bits": bits or None,
+                    "subscription_tier": sub_tier or None,
+                    "months_subscribed": sub_months or None,
+                    "first_message": first_message or None,
+                    "is_vip": is_vip or None,
+                    "is_moderator": is_moderator or None,
+                    "emote_count": emote_count or None,
+                }.items() if v is not None
+            } or None,
+        )
+
     cleaned = _preprocess_message(display_name, raw_text, text_stripped, emote_count)
     if cleaned is None:
         return {"status": "dropped"}
@@ -358,6 +389,15 @@ async def receive_speech(
     if cleaned is None:
         return {"status": "dropped"}
 
+    await asyncio.to_thread(
+        log_twitch_event,
+        type="speech",
+        content=raw_text.strip(),
+        display_name=body.get("speaker", "Unknown"),
+        stream_title=_stream_metadata["title"],
+        stream_category=_stream_metadata["category"],
+    )
+
     _buffer.append({"source": body.get("speaker", "Unknown"), "text": cleaned, "timestamp": time.time()})
     _last_event_time = time.time()
 
@@ -385,6 +425,14 @@ async def receive_stream_update(
 
     _stream_metadata["title"] = body.get("title", "")
     _stream_metadata["category"] = body.get("category", "")
+
+    await asyncio.to_thread(
+        log_twitch_event,
+        type="stream_update",
+        content=f"Stream updated: {_stream_metadata['title']} ({_stream_metadata['category']})",
+        stream_title=_stream_metadata["title"],
+        stream_category=_stream_metadata["category"],
+    )
 
     logger.info("Stream metadata updated: %s", _stream_metadata)
     return {"status": "ok", "stream_metadata": _stream_metadata}
@@ -415,6 +463,14 @@ async def receive_stream_event(
 
     if not text:
         return {"status": "dropped", "reason": "empty text"}
+
+    await asyncio.to_thread(
+        log_twitch_event,
+        type=event_type,
+        content=text,
+        stream_title=_stream_metadata["title"],
+        stream_category=_stream_metadata["category"],
+    )
 
     line = f"[StreamEvent]: {text}"
     _buffer.append({"source": "StreamEvent", "text": line, "timestamp": time.time()})
@@ -544,6 +600,19 @@ async def receive_mention(
     if not text:
         return {"status": "ok", "triggered": False}
 
+    # Mention events carry no msgId, so this may duplicate the /event/chat row
+    # for the same message — accepted for Phase 1 (correlating them is a
+    # Phase 2+ concern; the invoked_berries flag makes mention rows queryable).
+    await asyncio.to_thread(
+        log_twitch_event,
+        type="mention",
+        content=text,
+        username=username or None,
+        stream_title=_stream_metadata["title"],
+        stream_category=_stream_metadata["category"],
+        invoked_berries=True,
+    )
+
     response_text = await ask_berries_twitch(
         query=text,
         username=username,
@@ -552,6 +621,16 @@ async def receive_mention(
         recent_buffer_text="\n".join(e["text"] for e in _buffer[-15:]),
     )
     if response_text:
+        await asyncio.to_thread(
+            log_twitch_event,
+            type="message",
+            content=response_text,
+            username="berriesthedemon",
+            display_name="BerriesTheDemon",
+            stream_title=_stream_metadata["title"],
+            stream_category=_stream_metadata["category"],
+            is_bot=True,
+        )
         await _post_to_streamerbot(response_text, chat=chat, tts=tts)
     else:
         logger.warning("/event/mention — LLM returned no response; nothing posted to Streamer.bot")

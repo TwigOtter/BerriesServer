@@ -6,6 +6,7 @@ RAG-backed Discord mention pipeline, and reply in-channel. Includes the
 redirect-to-berries-chat policy for non-whitelisted channels.
 """
 
+import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -13,13 +14,15 @@ from contextlib import asynccontextmanager
 import discord
 from discord.ext import commands
 
-from discord_bot.utils import resolve_discord_tags
+from discord_bot.utils import message_row, resolve_discord_tags
 from shared.ask_berries import ask_berries_discord_mention
 from shared.config import (
     DISCORD_BERRIES_CHANNEL_WHITELIST_IDS,
     DISCORD_BERRIES_CHAT_CHANNEL_ID,
     DISCORD_STICKERS_ONLY_CHANNEL_IDS,
+    DISCORD_CHANNEL_INTERACTION_LIMIT,
 )
+from shared.interactions_db import log_discord_message
 from shared.prompt_builder import format_channel_history
 
 log = logging.getLogger("discord_bot.mention")
@@ -134,6 +137,14 @@ class MentionCog(commands.Cog):
             message.author, message.channel.id, content,
         )
 
+        # Dual-write (docs/sql-interaction-storage.md Phase 1). If the watcher
+        # cog already recorded this message, the upsert only escalates the
+        # invoked_berries flag.
+        await asyncio.to_thread(
+            log_discord_message,
+            **message_row(message, bot_user=self.bot.user, invoked_berries=True),
+        )
+
         # If Berries was @mentioned in a non-whitelisted channel and has already spoken
         # twice in the recent history, redirect to #berries-chat instead of responding.
         if (
@@ -141,7 +152,7 @@ class MentionCog(commands.Cog):
             and message.channel.id not in DISCORD_BERRIES_CHANNEL_WHITELIST_IDS
         ):
             bot_count = await self._count_recent_bot_messages(message.channel, before=message)
-            if bot_count >= 2:
+            if bot_count >= DISCORD_CHANNEL_INTERACTION_LIMIT:
                 log.info(
                     "Redirecting %s to berries-chat (%d recent bot messages in channel %s)",
                     message.author, bot_count, message.channel.id,
@@ -165,7 +176,13 @@ class MentionCog(commands.Cog):
                 )
                 log.debug("LLM response for mention: %.120r", response)
 
-            await message.channel.send(response)
+            sent = await message.channel.send(response)
+            # Berries' own reply is part of the record (is_bot=1) — the future
+            # chunker and context queries need both sides of the conversation.
+            await asyncio.to_thread(
+                log_discord_message,
+                **message_row(sent, bot_user=self.bot.user),
+            )
             log.info(
                 "Sent response to %s in channel %s (%.2fs end-to-end)",
                 message.author, message.channel.id, time.perf_counter() - t0,

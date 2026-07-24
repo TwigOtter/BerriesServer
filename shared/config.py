@@ -64,6 +64,17 @@ LORE_L2_THRESHOLD = float(os.getenv("LORE_L2_THRESHOLD", "1.5"))
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() in ("1", "true", "yes")
 RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "12"))    # vector hits fed to the reranker
 RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "5"))     # 0-10; below this a chunk is dropped
+
+# ── Retrieval windowing ────────────────────────────────────────────────────
+# After reranking, each kept chunk (~480 tokens) is cut down to its most
+# query-relevant slice before injection: sliding windows of whole chat lines
+# (~WINDOW_TOKEN_LIMIT tokens each, ~50% overlap) are embedded and scored by
+# L2 distance against the raw message; the best window merged with its
+# better-scoring neighbour (~150 tokens) is what gets injected. Keeps the
+# chroma block near ~600 tokens instead of ~1600 so the full system prompt
+# fits the 4096-token budget. See shared/windowing.py.
+WINDOW_ENABLED = os.getenv("WINDOW_ENABLED", "true").lower() in ("1", "true", "yes")
+WINDOW_TOKEN_LIMIT = int(os.getenv("WINDOW_TOKEN_LIMIT", "100"))  # per-window budget; stride is half this
 # Address of the chroma-server.service (see deploy/chroma-server.service).
 CHROMA_HOST = os.getenv("CHROMA_HOST", "127.0.0.1")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8001"))
@@ -78,8 +89,9 @@ EMBED_PORT = int(os.getenv("EMBED_PORT", "8003"))
 EMBED_URL = f"http://{EMBED_HOST}:{EMBED_PORT}"
 
 # ── LLM backend ────────────────────────────────────────────────────────────
-# "anthropic" for Anthropic API, "ollama" for local Ollama instance.
-LLM_BACKEND = os.getenv("LLM_BACKEND", "anthropic")
+# "anthropic" for Anthropic API, "ollama" for local Ollama instance,
+# "vllm" for a vLLM server (OpenAI-compatible /v1/chat/completions).
+LLM_BACKEND = os.getenv("LLM_BACKEND", "vllm")
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ANTHROPIC_ASSIST_MODEL = os.getenv("ANTHROPIC_ASSIST_MODEL", "claude-haiku-4-5-20251001")   # query rewriting, gif queries, utility tasks
@@ -87,6 +99,9 @@ ANTHROPIC_CHAT_MODEL = os.getenv("ANTHROPIC_CHAT_MODEL", "claude-sonnet-4-6")   
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
+
+VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "")  # vLLM server base URL, no trailing slash (e.g. http://host:8000)
+VLLM_MODEL = os.getenv("VLLM_MODEL", "")        # served model name; must match what vLLM was launched with
 
 # ── Discord ────────────────────────────────────────────────────────────────
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
@@ -117,6 +132,7 @@ DISCORD_STICKERS_ONLY_CHANNEL_IDS: list[int] = [
 ]
 _rules_sticker_id = os.getenv("DISCORD_RULES_STICKER_ID", "")
 DISCORD_RULES_STICKER_ID: int | None = int(_rules_sticker_id) if _rules_sticker_id else None
+DISCORD_CHANNEL_INTERACTION_LIMIT = int(os.getenv("DISCORD_CHANNEL_INTERACTION_LIMIT", "5"))
 
 # ── Agent tools (experimental) ─────────────────────────────────────────────
 # When enabled, Discord @mention responses run a tool-use loop (Anthropic
@@ -150,3 +166,7 @@ TWITCH_CHANNEL = os.getenv("TWITCH_CHANNEL", "twigotter")
 # ── Databases ──────────────────────────────────────────────────────────────
 USERS_DB_PATH = DATA_DIR / "users.db"
 MOVIES_DB_PATH = DATA_DIR / "movies.db"
+# Per-event interaction store (docs/sql-interaction-storage.md). Phase 1:
+# dual-written alongside the JSONL/Chroma flow; will become the system of
+# record that ChromaDB is derived from.
+INTERACTIONS_DB_PATH = DATA_DIR / "interactions.db"

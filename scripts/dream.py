@@ -436,7 +436,10 @@ async def phase_rag_summarization(date_str: str) -> Path | None:
         if not summary:
             continue
         summary = summary.strip()
-        if summary.upper() == "SKIP" or not summary:
+        # First-line check, not exact match: the model sometimes appends an
+        # explanation after the verdict ("SKIP\n\nThe passages contain no...")
+        # and an exact match would embed that whole reply as a summary.
+        if not summary or summary.split("\n", 1)[0].strip().upper() == "SKIP":
             log.debug("No facts extracted for query %r — skipping", query[:60])
             continue
 
