@@ -89,8 +89,9 @@ EMBED_PORT = int(os.getenv("EMBED_PORT", "8003"))
 EMBED_URL = f"http://{EMBED_HOST}:{EMBED_PORT}"
 
 # ── LLM backend ────────────────────────────────────────────────────────────
-# "anthropic" for Anthropic API, "ollama" for local Ollama instance.
-LLM_BACKEND = os.getenv("LLM_BACKEND", "anthropic")
+# "anthropic" for Anthropic API, "ollama" for local Ollama instance,
+# "vllm" for a vLLM server (OpenAI-compatible /v1/chat/completions).
+LLM_BACKEND = os.getenv("LLM_BACKEND", "vllm")
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ANTHROPIC_ASSIST_MODEL = os.getenv("ANTHROPIC_ASSIST_MODEL", "claude-haiku-4-5-20251001")   # query rewriting, gif queries, utility tasks
@@ -98,6 +99,9 @@ ANTHROPIC_CHAT_MODEL = os.getenv("ANTHROPIC_CHAT_MODEL", "claude-sonnet-4-6")   
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
+
+VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "")  # vLLM server base URL, no trailing slash (e.g. http://host:8000)
+VLLM_MODEL = os.getenv("VLLM_MODEL", "")        # served model name; must match what vLLM was launched with
 
 # ── Discord ────────────────────────────────────────────────────────────────
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")

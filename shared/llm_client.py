@@ -1,8 +1,9 @@
 """
 shared/llm_client.py
 
-LLM abstraction layer — swap between Anthropic API and local Ollama
-by changing LLM_BACKEND in config (or .env) without touching the callers.
+LLM abstraction layer — swap between the Anthropic API, local Ollama, or a
+vLLM server (OpenAI-compatible API) by changing LLM_BACKEND in config (or
+.env) without touching the callers.
 
 Every call is timed and logged with its purpose, model, and token usage, and
 recorded into the active interaction trace (shared/trace.py) when one exists.
@@ -20,6 +21,7 @@ from shared.config import (
     LLM_BACKEND,
     ANTHROPIC_API_KEY, ANTHROPIC_ASSIST_MODEL, ANTHROPIC_CHAT_MODEL,
     OLLAMA_BASE_URL, OLLAMA_MODEL,
+    VLLM_BASE_URL, VLLM_MODEL,
 )
 
 _log = logging.getLogger("llm_client")
@@ -45,7 +47,12 @@ async def get_completion(
               "rewrite_queries", "rerank", ...) — appears in logs and traces.
     """
     resolved_messages = messages or [{"role": "user", "content": user_message}]
-    resolved_model = (model or ANTHROPIC_CHAT_MODEL) if LLM_BACKEND == "anthropic" else OLLAMA_MODEL
+    if LLM_BACKEND == "anthropic":
+        resolved_model = model or ANTHROPIC_CHAT_MODEL
+    elif LLM_BACKEND == "vllm":
+        resolved_model = VLLM_MODEL
+    else:
+        resolved_model = OLLAMA_MODEL
 
     t0 = time.perf_counter()
     usage: dict = {}
@@ -55,8 +62,10 @@ async def get_completion(
             text, usage = await _anthropic_completion(system_prompt, resolved_messages, max_tokens, resolved_model)
         elif LLM_BACKEND == "ollama":
             text, usage = await _ollama_completion(system_prompt, resolved_messages, max_tokens)
+        elif LLM_BACKEND == "vllm":
+            text, usage = await _vllm_completion(system_prompt, resolved_messages, max_tokens)
         else:
-            raise ValueError(f"Unknown LLM_BACKEND: {LLM_BACKEND!r}. Use 'anthropic' or 'ollama'.")
+            raise ValueError(f"Unknown LLM_BACKEND: {LLM_BACKEND!r}. Use 'anthropic', 'ollama', or 'vllm'.")
         return text
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
@@ -102,6 +111,41 @@ async def _anthropic_completion(
             "output_tokens": message.usage.output_tokens,
         }
         return message.content[0].text, usage
+
+
+async def _vllm_completion(
+    system_prompt: str, messages: list[dict], max_tokens: int
+) -> tuple[str, dict]:
+    import httpx
+    payload = {
+        "model": VLLM_MODEL,
+        "messages": [{"role": "system", "content": system_prompt}, *messages],
+        "max_tokens": max_tokens,
+        "stream": False,
+        # Qwen3-family models think by default and will burn the entire
+        # max_tokens budget on chain-of-thought before answering. Templates
+        # that don't know this kwarg silently ignore it.
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{VLLM_BASE_URL}/v1/chat/completions",
+            json=payload,
+            timeout=120.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        text = data["choices"][0]["message"]["content"] or ""
+        # Reasoning models (Qwen3 family) emit their thinking inline as a
+        # <think>...</think> block unless the server strips it; only the part
+        # after the block is the actual reply.
+        if "</think>" in text:
+            text = text.split("</think>", 1)[1].strip()
+        usage = {
+            "input_tokens": data.get("usage", {}).get("prompt_tokens"),
+            "output_tokens": data.get("usage", {}).get("completion_tokens"),
+        }
+        return text, usage
 
 
 async def _ollama_completion(

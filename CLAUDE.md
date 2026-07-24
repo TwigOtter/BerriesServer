@@ -52,7 +52,7 @@ Streamer.bot → ingest_api (8000) → ChromaDB + SQLite + JSONL transcripts
 - `context_providers.py` — Composable system-prompt blocks (`LoreProvider`, `ChromaContextProvider`, `UserProfileProvider`, `RecentChunksProvider`, `ChannelHistoryProvider`). Pipelines in `ask_berries.py` compose a list per platform; both platforms lead with `LoreProvider` so the prompt is the same wherever Berries is invoked.
 - `prompt_builder.py` — Assembles system prompts from personality + context formatters + per-ContextType instructions.
 - `config.py` — All config from `.env`; every service imports from here.
-- `llm_client.py` — Async abstraction over Anthropic API or Ollama (swapped via `LLM_BACKEND` env var).
+- `llm_client.py` — Async abstraction over Anthropic API, Ollama, or a vLLM server (swapped via `LLM_BACKEND` env var).
 - `chroma_client.py` — Singleton ChromaDB client using local `nomic-ai/nomic-embed-text-v1` embeddings (8192-token limit, requires `einops`).
 - `user_db.py` / `movie_db.py` — SQLite wrappers for user profiles and movie suggestions/history.
 - `interactions_db.py` — Per-event store (`data/interactions.db`, WAL): raw Twitch events and Discord messages, dual-written alongside JSONL/Chroma (Phase 1 of `docs/sql-interaction-storage.md`; nothing reads it yet).
@@ -60,7 +60,7 @@ Streamer.bot → ingest_api (8000) → ChromaDB + SQLite + JSONL transcripts
 ## Configuration
 
 Copy `.env.example` to `.env`. Key variables:
-- `LLM_BACKEND` — `"anthropic"` or `"ollama"`
+- `LLM_BACKEND` — `"anthropic"`, `"ollama"`, or `"vllm"` (`VLLM_BASE_URL` + `VLLM_MODEL` point at an OpenAI-compatible vLLM server)
 - `ANTHROPIC_API_KEY`, `ANTHROPIC_CHAT_MODEL`, `ANTHROPIC_ASSIST_MODEL` — Claude config (chat: Sonnet 4.6 for personality calls; assist: Haiku 4.5 for query rewriting/utility tasks)
 - `DISCORD_TOKEN`, `DISCORD_BERRIES_CHANNEL_WHITELIST_IDS`, `DISCORD_ANNOUNCE_CHANNEL_ID`
 - `INGEST_SECRET` — shared auth header between services
