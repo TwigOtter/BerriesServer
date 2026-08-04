@@ -45,6 +45,7 @@ class BerriesRequest:
 
 class ContextProvider(Protocol):
     name: str
+    role: str = "developer"  # "system" merges into the system prompt; "developer" becomes its own message
     async def provide(self, req: BerriesRequest) -> str | None: ...
 
 
@@ -74,6 +75,7 @@ class LoreProvider:
     """
 
     name = "lore"
+    role = "system"  # character facts belong beside the personality, not as a developer message
 
     async def provide(self, req: BerriesRequest) -> str | None:
         queries = [q for q in (req.query, req.lore_context) if q.strip()]
@@ -147,14 +149,27 @@ class ChannelHistoryProvider:
 async def build_context(
     providers: list[ContextProvider],
     req: BerriesRequest,
-) -> str:
-    """Run providers in order and join the non-empty blocks."""
-    parts: list[str] = []
+) -> tuple[str, list[str]]:
+    """
+    Run providers in order, split by role.
+
+    Returns (system_context, developer_blocks): system_context is the joined
+    output of role="system" providers (currently just LoreProvider — character
+    facts belong beside the personality); developer_blocks is the ordered list
+    of every other provider's block, one per source, sent as separate
+    "developer"-role messages downstream (see shared/llm_client.py).
+    """
+    system_parts: list[str] = []
+    developer_blocks: list[str] = []
     for provider in providers:
         name = getattr(provider, "name", type(provider).__name__)
         with trace.step(f"context_{name}") as s:
             block = await provider.provide(req)
             s["chars"] = len(block) if block else 0
-        if block:
-            parts.append(block)
-    return "\n\n".join(parts)
+        if not block:
+            continue
+        if getattr(provider, "role", "developer") == "system":
+            system_parts.append(block)
+        else:
+            developer_blocks.append(block)
+    return "\n\n".join(system_parts), developer_blocks

@@ -135,6 +135,16 @@ def _print_detail(r: dict, show_prompts: bool) -> None:
     elif data.get("system_prompt"):
         print(f"\nsystem prompt: {len(data['system_prompt'])} chars (use --prompts to print it)")
 
+    developer_blocks = data.get("developer_blocks")
+    if developer_blocks:
+        if show_prompts:
+            print(f"\ndeveloper messages ({len(developer_blocks)}):")
+            for i, block in enumerate(developer_blocks, 1):
+                print(f"  [{i}] {block}")
+        else:
+            sizes = ", ".join(str(len(b)) for b in developer_blocks)
+            print(f"\ndeveloper messages: {len(developer_blocks)} ({sizes} chars; use --prompts to print them)")
+
 
 def _find_by_prefix(prefix: str) -> dict | None:
     """Search trace files newest-first for a trace id starting with prefix."""

@@ -41,11 +41,16 @@ async def run_tool_loop(
     user_message: str,
     max_tokens: int = 600,
     tools: list[BerriesTool] | None = None,
+    developer_blocks: list[str] | None = None,
 ) -> str | None:
     """
     Run an Anthropic tool-use conversation until the model produces a final
     text answer or AGENT_MAX_TOOL_ITERATIONS tool rounds have elapsed (after
     which one last call is made without tools to force an answer).
+
+    developer_blocks: ordered context blocks (see shared/context_providers.py).
+                       Anthropic has no "developer" role, so these are folded
+                       into system_prompt rather than sent as separate messages.
 
     Returns the response text, or None if the loop is unavailable/failed —
     callers should fall back to the plain pipeline.
@@ -53,6 +58,9 @@ async def run_tool_loop(
     if LLM_BACKEND != "anthropic":
         log.warning("run_tool_loop requires the anthropic backend (LLM_BACKEND=%r)", LLM_BACKEND)
         return None
+
+    if developer_blocks:
+        system_prompt = "\n\n".join(p for p in [system_prompt, *developer_blocks] if p)
 
     tools = tools if tools is not None else DEFAULT_TOOLS
     tool_schemas = [t.to_anthropic() for t in tools]

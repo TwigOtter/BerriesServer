@@ -20,7 +20,12 @@ import logging
 import re
 
 from shared import trace
-from shared.config import AGENT_TOOLS_ENABLED, PERSONALITY_FILE
+from shared.config import (
+    AGENT_TOOLS_ENABLED,
+    DISCORD_RESPONSE_TOKENS,
+    PERSONALITY_FILE,
+    TWITCH_RESPONSE_TOKENS,
+)
 from shared.context_providers import (
     BerriesRequest,
     ChannelHistoryProvider,
@@ -97,16 +102,19 @@ async def ask_berries(
     user_message: str = "",
     max_tokens: int = 256,
     messages: list[dict] | None = None,
+    developer_blocks: list[str] | None = None,
     purpose: str = "chat_response",
 ) -> str | None:
     """Raw LLM call via get_completion(). No logging — callers handle that.
 
-    messages: full conversation history. When provided, takes precedence over user_message.
-    purpose:  label for the call in logs/traces (see shared/llm_client.py).
+    messages:         full conversation history. When provided, takes precedence over user_message.
+    developer_blocks: ordered context blocks; see shared/context_providers.py and shared/llm_client.py.
+    purpose:          label for the call in logs/traces (see shared/llm_client.py).
     """
     return await get_completion(
         system_prompt=system_prompt, user_message=user_message,
-        max_tokens=max_tokens, messages=messages, purpose=purpose,
+        max_tokens=max_tokens, messages=messages, developer_blocks=developer_blocks,
+        purpose=purpose,
     )
 
 
@@ -114,7 +122,7 @@ async def ask_berries_discord(
     user_message: str,
     context_type: ContextType = ContextType.DISCORD_MENTION,
     context: str = "",
-    max_tokens: int = 600,
+    max_tokens: int = DISCORD_RESPONSE_TOKENS,
 ) -> str | None:
     """
     Builds the system prompt from personality + context_type and returns a cleaned response.
@@ -176,12 +184,15 @@ async def ask_berries_twitch(
             lore_context=recent_buffer_text,
             recent_chunks=[c["text"] for c in recent_chunks],
         )
-        context = await build_context(_TWITCH_PROVIDERS, req)
+        system_context, developer_blocks = await build_context(_TWITCH_PROVIDERS, req)
 
-        system_prompt = build_system_prompt(_load_personality(), context_type, context)
-        trace.add(system_prompt=system_prompt, user_message=user_message)
+        system_prompt = build_system_prompt(_load_personality(), context_type, system_context)
+        trace.add(system_prompt=system_prompt, user_message=user_message, developer_blocks=developer_blocks)
         with trace.step("llm_response"):
-            response = await ask_berries(system_prompt=system_prompt, user_message=user_message, max_tokens=80)
+            response = await ask_berries(
+                system_prompt=system_prompt, user_message=user_message,
+                max_tokens=TWITCH_RESPONSE_TOKENS, developer_blocks=developer_blocks,
+            )
         trace.add(response=response)
 
         if username and response:
@@ -230,9 +241,9 @@ async def ask_berries_discord_mention(
             lore_context=recent_user_messages,
             channel_history=channel_history,
         )
-        context = await build_context(_DISCORD_MENTION_PROVIDERS, req)
-        system_prompt = build_system_prompt(_load_personality(), ContextType.DISCORD_MENTION, context)
-        trace.add(system_prompt=system_prompt, user_message=user_message)
+        system_context, developer_blocks = await build_context(_DISCORD_MENTION_PROVIDERS, req)
+        system_prompt = build_system_prompt(_load_personality(), ContextType.DISCORD_MENTION, system_context)
+        trace.add(system_prompt=system_prompt, user_message=user_message, developer_blocks=developer_blocks)
 
         log.debug("ask_berries_discord_mention — user_message: %.120r", user_message)
         response = None
@@ -241,10 +252,16 @@ async def ask_berries_discord_mention(
             # Falls back to the plain single-shot call below if unavailable.
             from shared.agent import run_tool_loop
             with trace.step("agent_loop"):
-                response = await run_tool_loop(system_prompt=system_prompt, user_message=user_message, max_tokens=600)
+                response = await run_tool_loop(
+                    system_prompt=system_prompt, user_message=user_message,
+                    max_tokens=DISCORD_RESPONSE_TOKENS, developer_blocks=developer_blocks,
+                )
         if response is None:
             with trace.step("llm_response"):
-                response = await ask_berries(system_prompt=system_prompt, user_message=user_message, max_tokens=600)
+                response = await ask_berries(
+                    system_prompt=system_prompt, user_message=user_message,
+                    max_tokens=DISCORD_RESPONSE_TOKENS, developer_blocks=developer_blocks,
+                )
         response = cleanup_response(response) if response else response
         trace.add(response=response)
         log.debug("ask_berries_discord_mention — response: %.120r", response)
