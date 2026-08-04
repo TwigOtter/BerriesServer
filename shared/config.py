@@ -101,7 +101,8 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
 
 VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "")  # vLLM server base URL, no trailing slash (e.g. http://host:8000)
-VLLM_MODEL = os.getenv("VLLM_MODEL", "")        # served model name; must match what vLLM was launched with
+VLLM_CHAT_MODEL = os.getenv("VLLM_CHAT_MODEL", "")        # served model name; must match what vLLM was launched with
+VLLM_ASSIST_MODEL = os.getenv("VLLM_ASSIST_MODEL", "")  # served model name; must match what vLLM was launched with
 
 # ── Discord ────────────────────────────────────────────────────────────────
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
@@ -133,6 +134,7 @@ DISCORD_STICKERS_ONLY_CHANNEL_IDS: list[int] = [
 _rules_sticker_id = os.getenv("DISCORD_RULES_STICKER_ID", "")
 DISCORD_RULES_STICKER_ID: int | None = int(_rules_sticker_id) if _rules_sticker_id else None
 DISCORD_CHANNEL_INTERACTION_LIMIT = int(os.getenv("DISCORD_CHANNEL_INTERACTION_LIMIT", "5"))
+DISCORD_RESPONSE_TOKENS = int(os.getenv("DISCORD_RESPONSE_TOKENS", "300"))
 
 # ── Agent tools (experimental) ─────────────────────────────────────────────
 # When enabled, Discord @mention responses run a tool-use loop (Anthropic
@@ -162,6 +164,7 @@ GIPHY_API_KEY = os.getenv("GIPHY_API_KEY", "")
 STREAMERBOT_CALLBACK_URL = os.getenv("STREAMERBOT_CALLBACK_URL", "")           # URL to POST responses back
 STREAMERBOT_RESPONSE_ACTION_ID = os.getenv("STREAMERBOT_RESPONSE_ACTION_ID", "")  # Streamer.bot action to call with Berries' response; set in .env for flexibility but can also be sent in the request body
 TWITCH_CHANNEL = os.getenv("TWITCH_CHANNEL", "twigotter")
+TWITCH_RESPONSE_TOKENS = int(os.getenv("TWITCH_RESPONSE_TOKENS", "80"))
 
 # ── Databases ──────────────────────────────────────────────────────────────
 USERS_DB_PATH = DATA_DIR / "users.db"

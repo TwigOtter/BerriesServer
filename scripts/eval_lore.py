@@ -158,12 +158,13 @@ async def run_fabrication() -> None:
 
     for i, (question, canon) in enumerate(FABRICATION_QUESTIONS, 1):
         req = BerriesRequest(query=question, display_name="a viewer")
-        context = await build_context(providers, req)
-        system_prompt = build_system_prompt(personality, ContextType.DISCORD_MENTION, context)
+        system_context, developer_blocks = await build_context(providers, req)
+        system_prompt = build_system_prompt(personality, ContextType.DISCORD_MENTION, system_context)
         response = await get_completion(
             system_prompt=system_prompt,
             user_message=f"A viewer said: {question}",
             max_tokens=600,
+            developer_blocks=developer_blocks,
             purpose="eval_fabrication",
         )
         response = cleanup_response(response) if response else "(no response)"

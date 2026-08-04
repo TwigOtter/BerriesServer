@@ -21,7 +21,7 @@ from shared.config import (
     LLM_BACKEND,
     ANTHROPIC_API_KEY, ANTHROPIC_ASSIST_MODEL, ANTHROPIC_CHAT_MODEL,
     OLLAMA_BASE_URL, OLLAMA_MODEL,
-    VLLM_BASE_URL, VLLM_MODEL,
+    VLLM_BASE_URL, VLLM_CHAT_MODEL,
 )
 
 _log = logging.getLogger("llm_client")
@@ -33,24 +33,32 @@ async def get_completion(
     max_tokens: int = 256,
     model: str | None = None,
     messages: list[dict] | None = None,
+    developer_blocks: list[str] | None = None,
     purpose: str = "chat",
 ) -> str:
     """
     Send a prompt to the configured LLM backend and return the response text.
     Raises ValueError if LLM_BACKEND is not recognized.
 
-    model:    override the model used for this call. Defaults to ANTHROPIC_CHAT_MODEL (Sonnet).
-              Pass ANTHROPIC_ASSIST_MODEL explicitly for utility tasks (query rewriting, gif queries, etc.).
-    messages: full conversation history as a list of {"role": ..., "content": ...} dicts.
-              When provided, takes precedence over user_message.
+    model:            override the model used for this call. Defaults to ANTHROPIC_CHAT_MODEL (Sonnet).
+                       Pass ANTHROPIC_ASSIST_MODEL explicitly for utility tasks (query rewriting, gif queries, etc.).
+    messages:         full conversation history as a list of {"role": ..., "content": ...} dicts.
+                       When provided, takes precedence over user_message.
+    developer_blocks: ordered context blocks (retrieval, user profile, channel
+                       history, ...) sent as separate "developer"-role messages
+                       on vLLM, which supports that role. Anthropic and Ollama
+                       don't, so they get folded into system_prompt instead.
     purpose:  short label for what this call is for ("chat_response",
               "rewrite_queries", "rerank", ...) — appears in logs and traces.
     """
     resolved_messages = messages or [{"role": "user", "content": user_message}]
+    if developer_blocks and LLM_BACKEND != "vllm":
+        system_prompt = "\n\n".join(p for p in [system_prompt, *developer_blocks] if p)
+        developer_blocks = None
     if LLM_BACKEND == "anthropic":
         resolved_model = model or ANTHROPIC_CHAT_MODEL
     elif LLM_BACKEND == "vllm":
-        resolved_model = VLLM_MODEL
+        resolved_model = VLLM_CHAT_MODEL
     else:
         resolved_model = OLLAMA_MODEL
 
@@ -63,7 +71,7 @@ async def get_completion(
         elif LLM_BACKEND == "ollama":
             text, usage = await _ollama_completion(system_prompt, resolved_messages, max_tokens)
         elif LLM_BACKEND == "vllm":
-            text, usage = await _vllm_completion(system_prompt, resolved_messages, max_tokens)
+            text, usage = await _vllm_completion(system_prompt, resolved_messages, max_tokens, developer_blocks)
         else:
             raise ValueError(f"Unknown LLM_BACKEND: {LLM_BACKEND!r}. Use 'anthropic', 'ollama', or 'vllm'.")
         return text
@@ -114,12 +122,16 @@ async def _anthropic_completion(
 
 
 async def _vllm_completion(
-    system_prompt: str, messages: list[dict], max_tokens: int
+    system_prompt: str, messages: list[dict], max_tokens: int,
+    developer_blocks: list[str] | None = None,
 ) -> tuple[str, dict]:
     import httpx
+    payload_messages = [{"role": "system", "content": system_prompt}]
+    payload_messages += [{"role": "developer", "content": block} for block in (developer_blocks or [])]
+    payload_messages += messages
     payload = {
-        "model": VLLM_MODEL,
-        "messages": [{"role": "system", "content": system_prompt}, *messages],
+        "model": VLLM_CHAT_MODEL,
+        "messages": payload_messages,
         "max_tokens": max_tokens,
         "stream": False,
         # Qwen3-family models think by default and will burn the entire

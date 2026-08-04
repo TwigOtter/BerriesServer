@@ -60,12 +60,13 @@ Streamer.bot → ingest_api (8000) → ChromaDB + SQLite + JSONL transcripts
 ## Configuration
 
 Copy `.env.example` to `.env`. Key variables:
-- `LLM_BACKEND` — `"anthropic"`, `"ollama"`, or `"vllm"` (`VLLM_BASE_URL` + `VLLM_MODEL` point at an OpenAI-compatible vLLM server)
+- `LLM_BACKEND` — `"anthropic"`, `"ollama"`, or `"vllm"` (`VLLM_BASE_URL` + `VLLM_CHAT_MODEL` point at an OpenAI-compatible vLLM server)
 - `ANTHROPIC_API_KEY`, `ANTHROPIC_CHAT_MODEL`, `ANTHROPIC_ASSIST_MODEL` — Claude config (chat: Sonnet 4.6 for personality calls; assist: Haiku 4.5 for query rewriting/utility tasks)
 - `DISCORD_TOKEN`, `DISCORD_BERRIES_CHANNEL_WHITELIST_IDS`, `DISCORD_ANNOUNCE_CHANNEL_ID`
 - `INGEST_SECRET` — shared auth header between services
 - `LOCAL_TIMEZONE` (default `America/Chicago`) — calendar-day keying for daily logs, `stream_date`, transcript filenames, and dream.py's date math; absolute timestamps stay UTC
 - `CHUNK_TOKEN_LIMIT=480`, `CHUNK_TIMEOUT_SEC=300`, `CHROMA_N_RESULTS=3`
+- `DISCORD_RESPONSE_TOKENS=300`, `TWITCH_RESPONSE_TOKENS=124` — max_tokens for Berries' Discord and Twitch chat responses (`shared/ask_berries.py`)
 - `LORE_COLLECTION=berries_lore`, `LORE_N_RESULTS=6`, `LORE_L2_THRESHOLD=1.5` — recall-oriented lore retrieval (`LoreProvider`); see `berries_bot/lore/README.md`
 - `RERANK_ENABLED=true`, `RERANK_CANDIDATES=12`, `RERANK_MIN_SCORE=5` — assist-model reranking of retrieval candidates (`shared/retrieval.py`); measure with `python scripts/eval_retrieval.py`
 - `WINDOW_ENABLED=true`, `WINDOW_TOKEN_LIMIT=100` — post-rerank window selection (`shared/windowing.py`): shrink each injected chunk to its best ~150-token window
