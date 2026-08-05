@@ -26,7 +26,7 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 
-from shared.config import INTERACTIONS_DB_PATH, LOCAL_TZ
+from shared.config import INTERACTIONS_DB_PATH, LOCAL_TZ, TWITCH_HISTORY_ROW_LIMIT
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +82,9 @@ _CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_twitch_time      ON twitch_events(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_discord_user_time    ON discord_messages(user_id, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_discord_channel_time ON discord_messages(channel_id, created_at)",
+    # get_recent_twitch_messages() filters on type and orders by id -- this
+    # lets that query use an index range scan instead of a full table scan.
+    "CREATE INDEX IF NOT EXISTS idx_twitch_type_id ON twitch_events(type, id)",
 ]
 
 
@@ -191,3 +194,51 @@ def log_discord_message(
             )
     except Exception:
         log.exception("Failed to record discord message (channel=%s)", channel_id)
+
+
+def get_recent_twitch_messages(row_limit: int = TWITCH_HISTORY_ROW_LIMIT) -> list[dict]:
+    """
+    Most recent type='message' twitch_events rows, oldest -> newest, each as
+    {"is_bot": bool, "display_name": str, "content": str}. First read path
+    against this table (see module docstring) -- Phase 2 of
+    docs/sql-interaction-storage.md for Twitch: replaces the old in-memory
+    recent_chunks deque, which blended multiple viewers into one string per
+    chunk and never captured Berries' own replies at all.
+
+    Excludes type='mention' rows: a mention row duplicates the same viewer
+    message already recorded as type='message' by /event/chat (see module
+    docstring's Phase-1 note). type='message' already covers both viewer
+    chat and Berries' own logged replies (is_bot=1).
+
+    row_limit is a SQL-side cap (ORDER BY id DESC LIMIT n, then reversed) --
+    a coarse pre-filter before the real token-budget trim in
+    shared/history.py, so the query stays cheap without scanning the whole
+    table. No date/session scoping: ingest_api is long-running rather than
+    restarted per stream, so "last N messages" is what "recent" means here.
+
+    Best-effort like the writers: a read failure is logged and returns [],
+    degrading to "no history" rather than breaking the response pipeline.
+    """
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT is_bot, username, display_name, content
+                FROM twitch_events
+                WHERE type = 'message' AND content IS NOT NULL AND content != ''
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (row_limit,),
+            ).fetchall()
+    except Exception:
+        log.exception("Failed to read recent twitch messages")
+        return []
+    return [
+        {
+            "is_bot": bool(row["is_bot"]),
+            "display_name": row["display_name"] or row["username"] or "viewer",
+            "content": row["content"],
+        }
+        for row in reversed(rows)
+    ]

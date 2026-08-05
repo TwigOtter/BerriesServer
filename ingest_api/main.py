@@ -23,7 +23,6 @@ import hmac
 import json
 import time
 import uuid
-from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from shared.chroma_client import get_collection
@@ -75,9 +74,6 @@ app = FastAPI(title="Berries Ingest API", lifespan=lifespan)
 # Each entry: {"source": str, "text": str, "timestamp": float}
 _buffer: list[dict] = []
 _last_event_time: float = time.time()
-
-# Shared deque for recent chunks — used for short-term memory in response generation
-recent_chunks: deque = deque(maxlen=2)
 
 # Current stream metadata — updated by /event/stream-update
 _stream_metadata: dict = {"title": "", "category": ""}
@@ -159,7 +155,7 @@ def _buffer_token_count() -> int:
 
 async def _flush_buffer(reason: str) -> None:
     """
-    Flush the current buffer to .jsonl, ChromaDB, and the recent_chunks deque.
+    Flush the current buffer to .jsonl and ChromaDB.
     Keeps the last CHUNK_OVERLAP_SEC seconds of entries as the next buffer seed.
     """
     global _buffer
@@ -219,10 +215,7 @@ async def _flush_buffer(reason: str) -> None:
 
     await asyncio.to_thread(_chroma_add)
 
-    # 3. Push to deque for short-term memory
-    recent_chunks.append(chunk)
-
-    # 4. Keep overlap: drop entries older than CHUNK_OVERLAP_SEC
+    # 3. Keep overlap: drop entries older than CHUNK_OVERLAP_SEC
     cutoff = time.time() - CHUNK_OVERLAP_SEC
     _buffer = [e for e in _buffer if e["timestamp"] >= cutoff]
 
@@ -519,7 +512,6 @@ async def health() -> dict:
         "status": "ok",
         "buffer_entries": len(_buffer),
         "buffer_tokens": _buffer_token_count(),
-        "recent_chunks": len(recent_chunks),
         "stream_metadata": _stream_metadata,
     }
 
@@ -617,7 +609,6 @@ async def receive_mention(
         query=text,
         username=username,
         tts=tts,
-        recent_chunks=list(recent_chunks),
         recent_buffer_text="\n".join(e["text"] for e in _buffer[-15:]),
     )
     if response_text:

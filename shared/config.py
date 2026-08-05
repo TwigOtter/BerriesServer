@@ -104,6 +104,15 @@ VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "")  # vLLM server base URL, no trail
 VLLM_CHAT_MODEL = os.getenv("VLLM_CHAT_MODEL", "")        # served model name; must match what vLLM was launched with
 VLLM_ASSIST_MODEL = os.getenv("VLLM_ASSIST_MODEL", "")  # served model name; must match what vLLM was launched with
 
+# vLLM chat-response sampling. Defaults follow Qwen3's recommended non-thinking
+# settings; REPETITION_PENALTY (>1.0) is the lever that suppresses verbatim
+# copying of in-context blocks -- in vLLM it penalizes prompt tokens too, unlike
+# presence/frequency penalties which only see generated tokens. See docs.
+VLLM_TEMPERATURE = float(os.getenv("VLLM_TEMPERATURE", "0.7"))
+VLLM_TOP_P = float(os.getenv("VLLM_TOP_P", "0.8"))
+VLLM_TOP_K = int(os.getenv("VLLM_TOP_K", "20"))                       # -1 disables
+VLLM_REPETITION_PENALTY = float(os.getenv("VLLM_REPETITION_PENALTY", "1.1"))  # 1.0 = off
+
 # ── Discord ────────────────────────────────────────────────────────────────
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 DISCORD_BERRIES_CHANNEL_WHITELIST_IDS: list[int] = [
@@ -165,6 +174,15 @@ STREAMERBOT_CALLBACK_URL = os.getenv("STREAMERBOT_CALLBACK_URL", "")           #
 STREAMERBOT_RESPONSE_ACTION_ID = os.getenv("STREAMERBOT_RESPONSE_ACTION_ID", "")  # Streamer.bot action to call with Berries' response; set in .env for flexibility but can also be sent in the request body
 TWITCH_CHANNEL = os.getenv("TWITCH_CHANNEL", "twigotter")
 TWITCH_RESPONSE_TOKENS = int(os.getenv("TWITCH_RESPONSE_TOKENS", "80"))
+
+# ── Conversation history (Twitch/Discord) ─────────────────────────────────
+# Short-term memory spliced into `messages` as real user/assistant turns
+# (shared/history.py::build_history_turns), trimmed from the oldest end at
+# whole-turn granularity. See shared/interactions_db.py::get_recent_twitch_messages
+# and discord_bot/cogs/mention.py::_get_channel_history.
+TWITCH_HISTORY_TOKEN_LIMIT = int(os.getenv("TWITCH_HISTORY_TOKEN_LIMIT", "960"))  # ~= old recent_chunks ceiling (2 * CHUNK_TOKEN_LIMIT)
+TWITCH_HISTORY_ROW_LIMIT = int(os.getenv("TWITCH_HISTORY_ROW_LIMIT", "200"))      # SQL-side pre-filter before the token trim
+DISCORD_HISTORY_TOKEN_LIMIT = int(os.getenv("DISCORD_HISTORY_TOKEN_LIMIT", "1028"))  # token-accurate replacement for the old char/4 estimate
 
 # ── Databases ──────────────────────────────────────────────────────────────
 USERS_DB_PATH = DATA_DIR / "users.db"

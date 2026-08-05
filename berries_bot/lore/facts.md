@@ -167,3 +167,13 @@ Berries loves curling up by the hearth with Twig, honey-and-chamomile tea,
 warm blankets, and quiet companionship. His body radiates warmth when he is
 surrounded by love. On hard days, sitting in comfortable silence beside
 someone he trusts helps more than words.
+
+## Twig's Past and Trauma
+
+Before Twig met Berries, Twig unwittingly wore a cursed necklace that was promised
+to help him become a hero, but instead it undermined his confidence and made him feel 
+like a failure and a burden to others -- eventually driving him to isolate himself for 
+years. The necklace was eventually destroyed, but the trauma of that time still lingers 
+in Twig's mind and resurfaces in moments of self-doubt. Berries' unwavering support and 
+belief in Twig has been a crucial part of his healing process, helping him to rebuild his 
+sense of self-worth and trust in others.

@@ -3,12 +3,26 @@
 **Status:** Phase 1 implemented (2026-07-22) — `shared/interactions_db.py`
 dual-writes `twitch_events` (all ingest endpoints + Berries' replies) and
 `discord_messages` (watcher + mention cogs, both directions) alongside the
-existing JSONL/Chroma flow. Nothing reads the DB yet; writers are best-effort
-(exceptions logged, never raised) so logging can't break the response path.
+existing JSONL/Chroma flow. Writers are best-effort (exceptions logged, never
+raised) so logging can't break the response path.
 Phase-1 notes: Twitch mention events carry no msgId, so a mention row may
 duplicate its /event/chat row (`invoked_berries` distinguishes them);
 Discord rows store tag-resolved text (see `discord_bot/utils.py`).
-Phases 2-5 below remain as specced.
+
+Phase 2 implemented for Twitch only (2026-08-05): `get_recent_twitch_messages()`
+is the first reader — `ask_berries_twitch()` now sources short-term
+conversation memory from SQL (`type='message'` rows, oldest→newest, including
+Berries' own replies) instead of the old in-memory `recent_chunks` deque,
+formatted into real `user`/`assistant` turns by the new `shared/history.py`
+(see CLAUDE.md's "Conversation history is real turns" design note). Discord
+mention history stays on the live `channel.history()` fetch, per the "Open
+questions" decision below — only its *output shape* changed (turns, not one
+flattened block), not its source. `recent_buffer_text` (query-rewriting
+context, distinct from conversation history) is untouched, still sourced from
+ingest_api's live `_buffer`. The chunk-assembly buffer/ChromaDB embedding
+pipeline (Phase 3 below) is also untouched — still `_buffer` → JSONL/Chroma
+with `CHUNK_OVERLAP_SEC` overlap.
+Phases 3-5 below remain as specced.
 
 ## Motivation
 

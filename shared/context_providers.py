@@ -13,7 +13,7 @@ touching the pipelines themselves.
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Protocol
 
 from shared import trace
@@ -21,7 +21,6 @@ from shared.chroma_client import query_lore_multi
 from shared.prompt_builder import (
     format_chroma_context,
     format_lore,
-    format_recent_chunks,
     format_user_context,
 )
 from shared.retrieval import retrieve_context
@@ -39,8 +38,6 @@ class BerriesRequest:
     discord_id: str | None = None   # Discord snowflake, for user_db lookups
     recent_context: str = ""        # free-text recency context for query rewriting
     lore_context: str = ""          # recent conversation for the lore query, with Berries' own messages excluded
-    recent_chunks: list[str] = field(default_factory=list)  # flushed chunk texts
-    channel_history: str = ""       # pre-formatted Discord channel history block
 
 
 class ContextProvider(Protocol):
@@ -126,24 +123,6 @@ class UserProfileProvider:
             t_login = get_twitch_link(req.discord_id)
             return get_user(t_login) if t_login else get_user_by_discord(req.discord_id)
         return None
-
-
-class RecentChunksProvider:
-    """Short-term memory: recently flushed chunks from the live session."""
-
-    name = "recent_chunks"
-
-    async def provide(self, req: BerriesRequest) -> str | None:
-        return format_recent_chunks(req.recent_chunks) if req.recent_chunks else None
-
-
-class ChannelHistoryProvider:
-    """Pre-formatted Discord channel history (fetched by the bot)."""
-
-    name = "channel_history"
-
-    async def provide(self, req: BerriesRequest) -> str | None:
-        return req.channel_history or None
 
 
 async def build_context(

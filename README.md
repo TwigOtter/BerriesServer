@@ -82,8 +82,8 @@ All LLM calls go through here. Never called directly from non-service code.
 **Per-response context assembly (mention pipelines):**
 1. Load `berries_bot/personality.txt` as system prompt base
 2. Rewrite query → query ChromaDB for `CHROMA_N_RESULTS` semantically similar past chunks; discard any with L2 distance > `CHROMA_L2_THRESHOLD`
-3. Inject last 2 flushed chunks from `recent_chunks` deque (Twitch short-term memory)
-4. Call LLM → return response to service for delivery
+3. Fetch recent conversation (Twitch: SQL via `interactions_db.get_recent_twitch_messages`; Discord: live `channel.history()`) and format it as real `user`/`assistant` turns (`shared/history.py`), trimmed to the platform's history token budget
+4. Call LLM (developer-role context blocks + history turns + final query, in `messages`) → return response to service for delivery
 
 ### `discord_bot` — Community Server Bot
 

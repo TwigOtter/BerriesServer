@@ -145,6 +145,20 @@ def _print_detail(r: dict, show_prompts: bool) -> None:
             sizes = ", ".join(str(len(b)) for b in developer_blocks)
             print(f"\ndeveloper messages: {len(developer_blocks)} ({sizes} chars; use --prompts to print them)")
 
+    # Twitch/Discord mention pipelines trace a single ordered `messages` list
+    # (role="developer"/"user"/"assistant") instead of user_message +
+    # developer_blocks -- see shared/ask_berries.py.
+    messages = data.get("messages")
+    if messages:
+        if show_prompts:
+            print(f"\nmessages ({len(messages)}):")
+            for i, m in enumerate(messages, 1):
+                print(f"  [{i}] {m.get('role', '?')}: {m.get('content', '')}")
+        else:
+            print(f"\nmessages ({len(messages)}): use --prompts to print them")
+            for i, m in enumerate(messages, 1):
+                print(f"  [{i}] {m.get('role', '?'):<10s} {_preview(m.get('content', ''), 100)}")
+
 
 def _find_by_prefix(prefix: str) -> dict | None:
     """Search trace files newest-first for a trace id starting with prefix."""

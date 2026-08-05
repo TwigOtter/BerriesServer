@@ -31,9 +31,11 @@ def mock_collection():
 async def client(mock_collection, tmp_path):
     """
     Spin up the ingest_api app in-process for each test.
-    Patches out all I/O: LLM, ChromaDB, Streamer.bot, and SQLite user DB.
+    Patches out all I/O: LLM, ChromaDB, Streamer.bot, and SQLite user/interactions DBs.
     Resets module-level buffer state between tests.
     """
+    import shared.interactions_db as idb
+
     patches = [
         # tiktoken downloads its encoding file on first use — stub the counter
         # so tests run without network access. ~4 chars/token is close enough
@@ -54,14 +56,19 @@ async def client(mock_collection, tmp_path):
         patch("ingest_api.main.USERS_DB_PATH", tmp_path / "users.db"),
         patch("ingest_api.main.TRANSCRIPTS_DIR", tmp_path / "transcripts"),
         patch("ingest_api.main.INGEST_SECRET", ""),
+        # ask_berries_twitch reads recent history from interactions_db
+        # (shared/interactions_db.py::get_recent_twitch_messages) -- isolate
+        # it the same way USERS_DB_PATH is isolated, so tests don't read or
+        # write the real production data/interactions.db.
+        patch("shared.interactions_db.INTERACTIONS_DB_PATH", tmp_path / "interactions.db"),
     ]
     for p in patches:
         p.start()
+    idb.init_db()
 
     # Import after patches are active so module-level state is clean
-    from ingest_api.main import app, _buffer, recent_chunks
+    from ingest_api.main import app, _buffer
     _buffer.clear()
-    recent_chunks.clear()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
@@ -236,8 +243,12 @@ class TestMentionEvent:
         }
         with patch("shared.ask_berries.get_completion", new=AsyncMock(return_value="boo")) as mock_llm:
             await client.post("/event/mention", json={"text": "what are you up to?"})
-        system_prompt = mock_llm.call_args.kwargs["system_prompt"]
-        assert "Berries once hid in Twig's streaming chair." in system_prompt
+        # Retrieval is a developer-role message in `messages`, not folded into
+        # system_prompt (that folding, for backends without a developer role,
+        # happens inside the real get_completion() -- mocked out here).
+        messages = mock_llm.call_args.kwargs["messages"]
+        all_content = "\n".join(m["content"] for m in messages)
+        assert "Berries once hid in Twig's streaming chair." in all_content
 
     async def test_chroma_failure_does_not_break_response(self, client, mock_collection):
         mock_collection.query.side_effect = Exception("chroma is down")

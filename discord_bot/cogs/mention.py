@@ -22,8 +22,8 @@ from shared.config import (
     DISCORD_STICKERS_ONLY_CHANNEL_IDS,
     DISCORD_CHANNEL_INTERACTION_LIMIT,
 )
+from shared.history import HistoryItem
 from shared.interactions_db import log_discord_message
-from shared.prompt_builder import format_channel_history
 
 log = logging.getLogger("discord_bot.mention")
 
@@ -62,16 +62,18 @@ class MentionCog(commands.Cog):
         channel: discord.TextChannel,
         before: discord.Message,
         limit: int = 20,
-        max_tokens: int = 1028,
         user_lines_limit: int = 6,
-    ) -> tuple[str, str]:
+    ) -> tuple[list[HistoryItem], str, str]:
         """
         Fetch the last `limit` messages from `channel` before `message`.
 
-        Returns (history_block, recent_user_messages):
-          history_block:        all messages, formatted for the prompt; trimmed
-                                oldest-first until under `max_tokens` (estimated
-                                at 4 chars/token).
+        Returns (history_items, recent_context_text, recent_user_messages):
+          history_items:        (role, display_name, text) tuples, oldest -> newest,
+                                ready for shared.history.build_history_turns(). role is
+                                "assistant" for Berries' own messages, "user" otherwise
+                                -- token-budget trimming happens downstream, not here.
+          recent_context_text:  all fetched lines, unbudgeted -- feeds retrieval query
+                                rewriting (recent_context), not conversation history.
           recent_user_messages: the last `user_lines_limit` non-bot messages,
                                 plain lines. Used as the lore retrieval query —
                                 Berries' own messages are excluded so his voice
@@ -81,23 +83,22 @@ class MentionCog(commands.Cog):
             messages = [m async for m in channel.history(limit=limit, before=before)]
             messages.reverse()
             entries = [
-                (m, f"{m.author.display_name}: {resolve_discord_tags(m, bot_user=self.bot.user)}")
+                (m, resolve_discord_tags(m, bot_user=self.bot.user))
                 for m in messages
                 if m.content
             ]
-            lines = [line for _m, line in entries]
+            history_items: list[HistoryItem] = [
+                ("assistant" if m.author == self.bot.user else "user", m.author.display_name, text)
+                for m, text in entries
+            ]
+            lines = [f"{m.author.display_name}: {text}" for m, text in entries]
             user_lines = [
-                line for m, line in entries if m.author != self.bot.user
+                f"{m.author.display_name}: {text}" for m, text in entries if m.author != self.bot.user
             ][-user_lines_limit:]
-            # Trim from oldest until estimated token count fits
-            char_budget = max_tokens * 4
-            while lines and sum(len(l) for l in lines) > char_budget:
-                lines.pop(0)
-            history = format_channel_history(lines) if lines else ""
-            return history, "\n".join(user_lines)
+            return history_items, "\n".join(lines), "\n".join(user_lines)
         except Exception:
             log.exception("Failed to fetch channel history for channel %s", channel.id)
-            return "", ""
+            return [], "", ""
 
     async def _count_recent_bot_messages(
         self,
@@ -166,12 +167,15 @@ class MentionCog(commands.Cog):
         try:
             t0 = time.perf_counter()
             async with _maybe_typing(message.channel):
-                history, recent_user_messages = await self._get_channel_history(message.channel, before=message)
+                history_items, recent_context_text, recent_user_messages = await self._get_channel_history(
+                    message.channel, before=message,
+                )
                 response = await ask_berries_discord_mention(
                     query=content,
                     display_name=message.author.display_name,
                     discord_id=str(message.author.id),
-                    channel_history=history,
+                    history_items=history_items,
+                    recent_context_text=recent_context_text,
                     recent_user_messages=recent_user_messages,
                 )
                 log.debug("LLM response for mention: %.120r", response)

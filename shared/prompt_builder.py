@@ -101,24 +101,6 @@ def format_chroma_context(docs: list[tuple[str, dict]]) -> str:
     )
 
 
-def format_recent_chunks(chunk_texts: list[str]) -> str:
-    """Wrap recent Twitch chat chunks (short-term memory) with framing."""
-    return (
-        "RECENT CONVERSATION:\n"
-        "The most recent chat activity from this stream, for continuity:\n"
-        + "\n---\n".join(chunk_texts)
-    )
-
-
-def format_channel_history(lines: list[str]) -> str:
-    """Wrap Discord channel history lines with framing."""
-    return (
-        "=== RECENT CHANNEL MESSAGES ===\n"
-        "Here are the most recent messages in the channel, which may help you provide context and continuity to your response:\n"
-        + "\n".join(lines)
-    )
-
-
 def format_user_context(user: dict, fallback_name: str) -> str:
     """
     Format a user profile row into a USER PROFILE block for the system prompt.

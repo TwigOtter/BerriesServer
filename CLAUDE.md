@@ -49,13 +49,14 @@ Streamer.bot → ingest_api (8000) → ChromaDB + SQLite + JSONL transcripts
 - `trace.py` / `logging_setup.py` — Observability: per-interaction traces (step timings, LLM/tool calls, prompts) written to `logs/traces/*.jsonl` + one consistent root-logger config for all services. Inspect traces with `python scripts/traces.py`; see `docs/observability.md`.
 - `retrieval.py` — RAG retrieval stage: query rewriting → multi-query vector search → assist-model reranking (with abstain) → window selection → retrieval logging. Searches transcripts/summaries/Discord; lore is retrieved separately by `LoreProvider` from its own collection.
 - `windowing.py` — Post-rerank window selection: each kept chunk is cut to its most query-relevant ~150-token slice (sliding windows over whole chat lines, embedded and scored by L2 distance, best window merged with its better neighbor) so the injected block fits the system-prompt budget.
-- `context_providers.py` — Composable system-prompt blocks (`LoreProvider`, `ChromaContextProvider`, `UserProfileProvider`, `RecentChunksProvider`, `ChannelHistoryProvider`). Pipelines in `ask_berries.py` compose a list per platform; both platforms lead with `LoreProvider` so the prompt is the same wherever Berries is invoked.
+- `context_providers.py` — Composable system-prompt/developer blocks (`LoreProvider`, `ChromaContextProvider`, `UserProfileProvider`). Pipelines in `ask_berries.py` compose a "lead" list per platform (lore + retrieval, ahead of conversation history) plus `UserProfileProvider`, called separately and placed right before the final query; both platforms lead with `LoreProvider` so the prompt is the same wherever Berries is invoked.
+- `history.py` — Formats recent conversation (Twitch: SQL via `interactions_db.get_recent_twitch_messages`; Discord: live `channel.history()` fetch) into real `user`/`assistant` turns — `[Name]: text` for humans, unprefixed for Berries' own replies — trimmed from the oldest end at whole-turn granularity to `TWITCH_HISTORY_TOKEN_LIMIT`/`DISCORD_HISTORY_TOKEN_LIMIT`. Consecutive same-role turns are merged at dispatch time in `llm_client.py`, not left to the backend.
 - `prompt_builder.py` — Assembles system prompts from personality + context formatters + per-ContextType instructions.
 - `config.py` — All config from `.env`; every service imports from here.
-- `llm_client.py` — Async abstraction over Anthropic API, Ollama, or a vLLM server (swapped via `LLM_BACKEND` env var).
+- `llm_client.py` — Async abstraction over Anthropic API, Ollama, or a vLLM server (swapped via `LLM_BACKEND` env var). `get_completion()` takes a `messages` list that may include `role="developer"` entries at specific positions (not just up front); `fold_developer_blocks()`/`merge_consecutive_messages()` normalize that list per-backend before dispatch — vLLM sends `developer` natively, Anthropic/Ollama get it folded into the next user turn, and every backend gets consecutive same-role turns merged (Anthropic rejects those outright).
 - `chroma_client.py` — Singleton ChromaDB client using local `nomic-ai/nomic-embed-text-v1` embeddings (8192-token limit, requires `einops`).
 - `user_db.py` / `movie_db.py` — SQLite wrappers for user profiles and movie suggestions/history.
-- `interactions_db.py` — Per-event store (`data/interactions.db`, WAL): raw Twitch events and Discord messages, dual-written alongside JSONL/Chroma (Phase 1 of `docs/sql-interaction-storage.md`; nothing reads it yet).
+- `interactions_db.py` — Per-event store (`data/interactions.db`, WAL): raw Twitch events and Discord messages, dual-written alongside JSONL/Chroma (Phase 1 of `docs/sql-interaction-storage.md`). `get_recent_twitch_messages()` is the first reader (Phase 2, Twitch only) — feeds Twitch conversation history via `history.py`.
 
 ## Configuration
 
@@ -71,12 +72,13 @@ Copy `.env.example` to `.env`. Key variables:
 - `RERANK_ENABLED=true`, `RERANK_CANDIDATES=12`, `RERANK_MIN_SCORE=5` — assist-model reranking of retrieval candidates (`shared/retrieval.py`); measure with `python scripts/eval_retrieval.py`
 - `WINDOW_ENABLED=true`, `WINDOW_TOKEN_LIMIT=100` — post-rerank window selection (`shared/windowing.py`): shrink each injected chunk to its best ~150-token window
 - `AGENT_TOOLS_ENABLED=false` — experimental tool-use loop for Discord mentions (`shared/agent.py`, `shared/tools.py`); see `docs/agent-tools.md` before enabling
+- `TWITCH_HISTORY_TOKEN_LIMIT=960`, `TWITCH_HISTORY_ROW_LIMIT=200`, `DISCORD_HISTORY_TOKEN_LIMIT=1028` — conversation-history turn budgets (`shared/history.py`)
 - `TRACE_ENABLED=true` — per-interaction traces in `logs/traces/YYYY-MM-DD.jsonl` (step timings, LLM token usage, full prompts); inspect with `python scripts/traces.py`
 
 ## Key Design Decisions
 
 - **JSONL transcripts are ground truth** — ChromaDB is a derived index; can be rebuilt from `data/transcripts/*.jsonl`
-- **`recent_chunks` deque** — In-memory cache (maxlen=2) in ingest_api, shared with berries_bot for recency context
+- **Conversation history is real turns, not a flattened block** — recent Twitch/Discord messages are sent to the LLM as delineated `user`/`assistant` messages (`shared/history.py`), not one lumped developer-role blob. Twitch sources this from SQL (`interactions_db.get_recent_twitch_messages`, restart-safe); Discord still uses a live `channel.history()` fetch (see `docs/sql-interaction-storage.md`'s decision on why).
 - **Personality in `berries_bot/personality.txt`** — Edit character prompt without code changes; responses must be TTS-friendly (no markdown, single line)
 - **Discord watch channels are logged** — Messages in `DISCORD_WATCH_CHANNEL_IDS` channels are buffered and flushed to ChromaDB (same chunking logic as Twitch). Other Discord channels are not stored.
 - **Streamer.bot handles response gating** — Redeems, keywords, and sub checks are managed externally

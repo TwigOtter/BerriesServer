@@ -116,3 +116,51 @@ def test_discord_bot_reply_recorded_with_is_bot():
     )
     (row,) = _rows("discord_messages")
     assert row["is_bot"] == 1
+
+
+def test_get_recent_twitch_messages_oldest_to_newest():
+    idb.log_twitch_event(type="message", content="first", display_name="Twig", message_id="1")
+    idb.log_twitch_event(type="message", content="second", display_name="Twig", message_id="2")
+    idb.log_twitch_event(type="message", content="third", display_name="Twig", message_id="3")
+    rows = idb.get_recent_twitch_messages()
+    assert [r["content"] for r in rows] == ["first", "second", "third"]
+
+
+def test_get_recent_twitch_messages_excludes_mention_rows():
+    idb.log_twitch_event(type="message", content="the actual chat message", display_name="Twig", message_id="1")
+    idb.log_twitch_event(type="mention", content="the actual chat message", display_name="Twig")
+    rows = idb.get_recent_twitch_messages()
+    assert len(rows) == 1
+    assert rows[0]["content"] == "the actual chat message"
+
+
+def test_get_recent_twitch_messages_includes_berries_own_replies():
+    idb.log_twitch_event(type="message", content="hi berries", display_name="Twig", message_id="1")
+    idb.log_twitch_event(type="message", content="hello little otter", username="berriesthedemon",
+                          display_name="BerriesTheDemon", is_bot=True)
+    rows = idb.get_recent_twitch_messages()
+    assert [r["is_bot"] for r in rows] == [False, True]
+    assert rows[1]["display_name"] == "BerriesTheDemon"
+
+
+def test_get_recent_twitch_messages_respects_row_limit():
+    for i in range(5):
+        idb.log_twitch_event(type="message", content=f"msg{i}", display_name="Twig", message_id=str(i))
+    rows = idb.get_recent_twitch_messages(row_limit=2)
+    assert [r["content"] for r in rows] == ["msg3", "msg4"]
+
+
+def test_get_recent_twitch_messages_falls_back_to_username_then_viewer():
+    idb.log_twitch_event(type="message", content="a", username="chatter123", message_id="1")
+    idb.log_twitch_event(type="message", content="b", message_id="2")
+    rows = idb.get_recent_twitch_messages()
+    assert rows[0]["display_name"] == "chatter123"
+    assert rows[1]["display_name"] == "viewer"
+
+
+def test_get_recent_twitch_messages_read_failure_is_swallowed(monkeypatch):
+    def boom():
+        raise RuntimeError("db unavailable")
+
+    monkeypatch.setattr(idb, "_connect", boom)
+    assert idb.get_recent_twitch_messages() == []

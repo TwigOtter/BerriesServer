@@ -22,19 +22,21 @@ import re
 from shared import trace
 from shared.config import (
     AGENT_TOOLS_ENABLED,
+    DISCORD_HISTORY_TOKEN_LIMIT,
     DISCORD_RESPONSE_TOKENS,
     PERSONALITY_FILE,
+    TWITCH_HISTORY_TOKEN_LIMIT,
     TWITCH_RESPONSE_TOKENS,
 )
 from shared.context_providers import (
     BerriesRequest,
-    ChannelHistoryProvider,
     ChromaContextProvider,
     LoreProvider,
-    RecentChunksProvider,
     UserProfileProvider,
     build_context,
 )
+from shared.history import HistoryItem, build_history_turns, format_user_turn
+from shared.interactions_db import get_recent_twitch_messages
 from shared.llm_client import get_completion
 from shared.prompt_builder import ContextType, build_system_prompt
 from shared.interaction_log import log_interaction
@@ -50,18 +52,38 @@ log = logging.getLogger(__name__)
 # dedicated lore collection (recall-oriented, no rerank) — see the provider's
 # docstring and berries_bot/lore/README.md for why lore does not share the
 # transcript retrieval pool.
-_TWITCH_PROVIDERS = [
+#
+# Conversation history and the user-profile block are NOT in these lists —
+# history turns are spliced in separately (build_history_turns) and the
+# profile block is placed right before the final query, not up front with
+# these "lead" blocks. See ask_berries_twitch/ask_berries_discord_mention.
+_TWITCH_LEAD_PROVIDERS = [
     LoreProvider(),
     ChromaContextProvider(),
-    UserProfileProvider(),
-    RecentChunksProvider(),
 ]
-_DISCORD_MENTION_PROVIDERS = [
+_DISCORD_LEAD_PROVIDERS = [
     LoreProvider(),
     ChromaContextProvider(),
-    UserProfileProvider(),
-    ChannelHistoryProvider(),
 ]
+_PROFILE_PROVIDER = UserProfileProvider()
+
+
+def _assemble_messages(
+    lead_blocks: list[str],
+    history_turns: list[dict],
+    profile_block: str | None,
+    final_query: str,
+) -> list[dict]:
+    """
+    [developer(lead context: lore retrieval, ...), *history turns,
+    developer(user profile — right before the query it's about), user(final query)]
+    """
+    messages = [{"role": "developer", "content": b} for b in lead_blocks]
+    messages += history_turns
+    if profile_block:
+        messages.append({"role": "developer", "content": profile_block})
+    messages.append({"role": "user", "content": final_query})
+    return messages
 
 
 # ── Internal helpers ─────────────────────────────────────────────────────────
@@ -102,18 +124,18 @@ async def ask_berries(
     user_message: str = "",
     max_tokens: int = 256,
     messages: list[dict] | None = None,
-    developer_blocks: list[str] | None = None,
     purpose: str = "chat_response",
 ) -> str | None:
     """Raw LLM call via get_completion(). No logging — callers handle that.
 
-    messages:         full conversation history. When provided, takes precedence over user_message.
-    developer_blocks: ordered context blocks; see shared/context_providers.py and shared/llm_client.py.
-    purpose:          label for the call in logs/traces (see shared/llm_client.py).
+    messages: full conversation, possibly including role="developer" context
+              blocks at specific positions. When provided, takes precedence
+              over user_message. See shared/llm_client.py.
+    purpose:  label for the call in logs/traces (see shared/llm_client.py).
     """
     return await get_completion(
         system_prompt=system_prompt, user_message=user_message,
-        max_tokens=max_tokens, messages=messages, developer_blocks=developer_blocks,
+        max_tokens=max_tokens, messages=messages,
         purpose=purpose,
     )
 
@@ -145,7 +167,6 @@ async def ask_berries_twitch(
     query: str,
     username: str,
     tts: bool,
-    recent_chunks: list[dict],
     recent_buffer_text: str = "",
 ) -> str | None:
     """
@@ -158,19 +179,14 @@ async def ask_berries_twitch(
         query:              Raw viewer message (used for ChromaDB retrieval and logging).
         username:           Twitch t_login; used for nickname lookup.
         tts:                Whether TTS mode is active (affects response instructions).
-        recent_chunks:      Deque of recently flushed chunks for short-term memory context.
-        recent_buffer_text: Last N in-progress buffer entries for query rewriting context.
+        recent_buffer_text: Last N in-progress buffer entries for query rewriting context
+                             (NOT conversation history — see get_recent_twitch_messages
+                             for that).
     """
     with trace.trace("twitch_mention", username=username, query=query, tts=tts):
         with trace.step("nickname_lookup"):
             nickname = await asyncio.to_thread(_get_nickname_twitch, username) if username else ""
-        if username and nickname:
-            user_message = (
-                f"A viewer named {nickname} (username: {username}, call them '{nickname}') "
-                f'says: "{query}" -- Please respond directly to them.'
-            )
-        else:
-            user_message = query
+        final_query = format_user_turn(nickname, query) if username else query
 
         context_type = ContextType.TWITCH_TTS if tts else ContextType.TWITCH_CHAT
 
@@ -182,16 +198,29 @@ async def ask_berries_twitch(
             # Twitch buffer text is multi-user chat, not dominated by Berries'
             # own replies, so it serves as the lore query unfiltered.
             lore_context=recent_buffer_text,
-            recent_chunks=[c["text"] for c in recent_chunks],
         )
-        system_context, developer_blocks = await build_context(_TWITCH_PROVIDERS, req)
+        system_context, lead_blocks = await build_context(_TWITCH_LEAD_PROVIDERS, req)
+
+        with trace.step("recent_twitch_messages") as s:
+            rows = await asyncio.to_thread(get_recent_twitch_messages)
+            s["rows"] = len(rows)
+        items: list[HistoryItem] = [
+            ("assistant" if row["is_bot"] else "user", row["display_name"], row["content"])
+            for row in rows
+        ]
+        history_turns = build_history_turns(items, token_limit=TWITCH_HISTORY_TOKEN_LIMIT)
+
+        with trace.step("context_user_profile") as s:
+            profile_block = await _PROFILE_PROVIDER.provide(req)
+            s["chars"] = len(profile_block) if profile_block else 0
+        messages = _assemble_messages(lead_blocks, history_turns, profile_block, final_query)
 
         system_prompt = build_system_prompt(_load_personality(), context_type, system_context)
-        trace.add(system_prompt=system_prompt, user_message=user_message, developer_blocks=developer_blocks)
+        trace.add(system_prompt=system_prompt, messages=messages)
         with trace.step("llm_response"):
             response = await ask_berries(
-                system_prompt=system_prompt, user_message=user_message,
-                max_tokens=TWITCH_RESPONSE_TOKENS, developer_blocks=developer_blocks,
+                system_prompt=system_prompt, messages=messages,
+                max_tokens=TWITCH_RESPONSE_TOKENS,
             )
         trace.add(response=response)
 
@@ -210,7 +239,8 @@ async def ask_berries_discord_mention(
     query: str,
     display_name: str,
     discord_id: str,
-    channel_history: str,
+    history_items: list[HistoryItem],
+    recent_context_text: str = "",
     recent_user_messages: str = "",
 ) -> str | None:
     """
@@ -223,44 +253,59 @@ async def ask_berries_discord_mention(
         query:                Raw message content (with @mention token already replaced).
         display_name:         Discord display name shown in the user_message to Berries.
         discord_id:           Discord user ID string; used for nickname lookup in user_db.
-        channel_history:      Pre-fetched formatted channel history string (from _get_channel_history).
+        history_items:        (role, display_name, text) tuples from the channel, oldest
+                              -> newest (from discord_bot/cogs/mention.py::_get_channel_history).
+        recent_context_text:  All fetched channel lines, unbudgeted — feeds retrieval
+                              query rewriting (recent_context), not conversation history.
         recent_user_messages: Recent channel messages with Berries' own excluded;
                               drives the lore query so his voice doesn't steer lore retrieval.
     """
     with trace.trace("discord_mention", username=display_name, discord_id=discord_id, query=query):
         with trace.step("nickname_lookup"):
             nickname = await asyncio.to_thread(_get_nickname_discord, discord_id, display_name)
-        user_message = f"{nickname} said: {query}"
+        final_query = format_user_turn(nickname, query)
 
         req = BerriesRequest(
             query=query,
             display_name=display_name,
             discord_id=discord_id,
-            # channel_history doubles as recency context for query rewriting
-            recent_context=channel_history,
+            recent_context=recent_context_text,
             lore_context=recent_user_messages,
-            channel_history=channel_history,
         )
-        system_context, developer_blocks = await build_context(_DISCORD_MENTION_PROVIDERS, req)
-        system_prompt = build_system_prompt(_load_personality(), ContextType.DISCORD_MENTION, system_context)
-        trace.add(system_prompt=system_prompt, user_message=user_message, developer_blocks=developer_blocks)
+        system_context, lead_blocks = await build_context(_DISCORD_LEAD_PROVIDERS, req)
+        history_turns = build_history_turns(history_items, token_limit=DISCORD_HISTORY_TOKEN_LIMIT)
+        with trace.step("context_user_profile") as s:
+            profile_block = await _PROFILE_PROVIDER.provide(req)
+            s["chars"] = len(profile_block) if profile_block else 0
+        messages = _assemble_messages(lead_blocks, history_turns, profile_block, final_query)
 
-        log.debug("ask_berries_discord_mention — user_message: %.120r", user_message)
+        system_prompt = build_system_prompt(_load_personality(), ContextType.DISCORD_MENTION, system_context)
+        trace.add(system_prompt=system_prompt, messages=messages)
+
+        log.debug("ask_berries_discord_mention — final_query: %.120r", final_query)
         response = None
         if AGENT_TOOLS_ENABLED:
             # Experimental tool-use loop (search_memories, get_server_rules, ...).
             # Falls back to the plain single-shot call below if unavailable.
+            # Doesn't (yet) have turn-history awareness, so history is flattened
+            # into one more developer block, preserving today's behavior for
+            # this off-by-default path. See docs/agent-tools.md.
             from shared.agent import run_tool_loop
+            agent_dev_blocks = list(lead_blocks)
+            if profile_block:
+                agent_dev_blocks.append(profile_block)
+            if history_turns:
+                agent_dev_blocks.append("\n".join(t["content"] for t in history_turns))
             with trace.step("agent_loop"):
                 response = await run_tool_loop(
-                    system_prompt=system_prompt, user_message=user_message,
-                    max_tokens=DISCORD_RESPONSE_TOKENS, developer_blocks=developer_blocks,
+                    system_prompt=system_prompt, user_message=final_query,
+                    max_tokens=DISCORD_RESPONSE_TOKENS, developer_blocks=agent_dev_blocks,
                 )
         if response is None:
             with trace.step("llm_response"):
                 response = await ask_berries(
-                    system_prompt=system_prompt, user_message=user_message,
-                    max_tokens=DISCORD_RESPONSE_TOKENS, developer_blocks=developer_blocks,
+                    system_prompt=system_prompt, messages=messages,
+                    max_tokens=DISCORD_RESPONSE_TOKENS,
                 )
         response = cleanup_response(response) if response else response
         trace.add(response=response)

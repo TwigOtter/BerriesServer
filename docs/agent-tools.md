@@ -85,6 +85,13 @@ of that question is settled — always injected, never searched.
 2. **More tools?** Candidates: movie suggestion list lookup, stream schedule,
    "remember this about me" (writes a user note — needs a write-gating
    discussion first).
+3. **History as turns.** `run_tool_loop()` still gets conversation history as
+   one flattened developer block (`shared/ask_berries.py` reconstructs a
+   flattened string from `history_turns` for this path only), not as real
+   `user`/`assistant` turns the way the plain single-shot pipeline does since
+   2026-08-05 (see `shared/history.py`). Revisit when agent-tools work
+   resumes — the flattening was a deliberate stopgap to avoid changing this
+   off-by-default path's behavior mid-refactor.
 
 ## Rollout suggestion
 
