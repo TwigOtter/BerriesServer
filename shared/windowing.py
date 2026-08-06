@@ -1,9 +1,13 @@
 """
 shared/windowing.py
 
-Post-rerank excerpt selection: cut each kept chunk (~480 tokens) down to the
-~100-token slice that is actually about the user's message, so three chunks
-cost ~600 prompt tokens instead of ~1600.
+Pre-rerank excerpt selection: cut each candidate chunk (~480 tokens) down to
+the ~100-token slice that is actually about the user's message, so three
+chunks cost ~600 prompt tokens instead of ~1600.
+
+Runs on every vector-search candidate, ahead of rerank_chunks, so the judge
+scores the exact text that will be injected and a full RERANK_CANDIDATES
+batch fits in one rerank prompt (see shared/retrieval.py).
 
 How (shrink_docs):
   1. Split the chunk into segments at line boundaries — chunk text is

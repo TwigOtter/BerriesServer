@@ -7,14 +7,20 @@ The RAG retrieval stage: everything between a raw user message and the
 Pipeline (retrieve_context):
   1. rewrite_queries — assist-model rewrite of the message into 2-3 search queries
   2. query_chroma_multi — multi-query vector search (run off the event loop)
-  3. rerank_chunks — assist-model relevance scoring over the candidates;
-     keeps the best CHROMA_N_RESULTS above RERANK_MIN_SCORE and may return
-     nothing at all (abstain) when no candidate is actually relevant
-  4. shrink_docs (shared/windowing.py) — cuts each kept chunk down to its
+  3. shrink_docs (shared/windowing.py) — cuts every candidate down to its
      most query-relevant ~150-token window so the injected block fits the
      system-prompt token budget
+  4. rerank_chunks — assist-model relevance scoring over the windowed
+     candidates; keeps the best CHROMA_N_RESULTS above RERANK_MIN_SCORE and
+     may return nothing at all (abstain) when no candidate is actually relevant
   5. log_retrieval — records the final injected excerpts for the nightly
      dreaming summarization and for scripts/eval_retrieval.py
+
+Windowing runs before reranking so the judge scores the same excerpt that
+gets injected, rather than scoring a ~480-token chunk whose relevant part may
+then be windowed away. It also keeps the rerank prompt to ~RERANK_CANDIDATES
+× ~150 tokens, which is what makes a 12-candidate batch fit a 4096-token
+context at all.
 
 Reranking exists because vector similarity is recall-oriented: a chunk that
 merely *mentions* mushrooms scores close to one that is *about* mushrooms.
@@ -171,19 +177,22 @@ async def retrieve_context(
             len(candidates), len(search_queries),
         )
 
+        # Window before reranking, not after: the judge then scores the exact
+        # text that will be injected, and RERANK_CANDIDATES full chunks no
+        # longer have to fit in one rerank prompt.
+        if WINDOW_ENABLED and candidates:
+            # shrink_docs makes blocking embedding HTTP calls — off the loop.
+            with trace.step("window") as s:
+                s["tokens_before"] = sum(count_tokens(doc) for doc, _ in candidates)
+                candidates = await asyncio.to_thread(shrink_docs, query, candidates)
+                s["tokens_after"] = sum(count_tokens(doc) for doc, _ in candidates)
+
         if RERANK_ENABLED:
             with trace.step("rerank") as s:
                 docs = await rerank_chunks(query, candidates)
                 s["kept"] = len(docs)
         else:
             docs = candidates[:CHROMA_N_RESULTS]
-
-        if WINDOW_ENABLED and docs:
-            # shrink_docs makes blocking embedding HTTP calls — off the loop.
-            with trace.step("window") as s:
-                s["tokens_before"] = sum(count_tokens(doc) for doc, _ in docs)
-                docs = await asyncio.to_thread(shrink_docs, query, docs)
-                s["tokens_after"] = sum(count_tokens(doc) for doc, _ in docs)
 
         # Record what was actually injected, keyed by the original message —
         # feeds the nightly dream summarization and the retrieval eval harness.

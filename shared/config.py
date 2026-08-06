@@ -66,13 +66,16 @@ RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "12"))    # vector hits f
 RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "5"))     # 0-10; below this a chunk is dropped
 
 # ── Retrieval windowing ────────────────────────────────────────────────────
-# After reranking, each kept chunk (~480 tokens) is cut down to its most
-# query-relevant slice before injection: sliding windows of whole chat lines
+# Before reranking, each candidate chunk (~480 tokens) is cut down to its most
+# query-relevant slice: sliding windows of whole chat lines
 # (~WINDOW_TOKEN_LIMIT tokens each, ~50% overlap) are embedded and scored by
 # L2 distance against the raw message; the best window merged with its
-# better-scoring neighbour (~150 tokens) is what gets injected. Keeps the
-# chroma block near ~600 tokens instead of ~1600 so the full system prompt
-# fits the 4096-token budget. See shared/windowing.py.
+# better-scoring neighbour (~150 tokens) is what the reranker judges and what
+# gets injected. Keeps the chroma block near ~600 tokens instead of ~1600 so
+# the full system prompt fits the 4096-token budget. See shared/windowing.py.
+# Note: with RERANK_ENABLED=true this also keeps the rerank prompt itself
+# inside that budget — turning windowing off puts RERANK_CANDIDATES full
+# chunks in one prompt, which overflows 4096 and 400s.
 WINDOW_ENABLED = os.getenv("WINDOW_ENABLED", "true").lower() in ("1", "true", "yes")
 WINDOW_TOKEN_LIMIT = int(os.getenv("WINDOW_TOKEN_LIMIT", "100"))  # per-window budget; stride is half this
 # Address of the chroma-server.service (see deploy/chroma-server.service).

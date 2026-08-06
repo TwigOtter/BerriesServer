@@ -1,7 +1,7 @@
 """
 tests/test_windowing.py
 
-Unit tests for post-rerank window selection — segment splitting (line
+Unit tests for pre-rerank window selection — segment splitting (line
 boundaries, oversized-line elision), sliding-window construction, the
 best-plus-better-neighbour merge, and shrink_docs wiring with embeddings
 mocked. No embed service or ChromaDB required.
@@ -173,17 +173,21 @@ class TestShrinkDocs:
 
 
 class TestRetrievalWiring:
-    async def test_retrieve_context_windows_after_rerank(self):
+    async def test_retrieve_context_windows_before_rerank(self):
+        """Candidates are shrunk first, so the reranker judges the excerpt."""
         from shared.retrieval import retrieve_context
 
-        docs = [("chunk text", {"source": "twitch"})]
+        candidates = [("chunk text", {"source": "twitch"})]
         shrunk = [("chunk", {"source": "twitch"})]
         from unittest.mock import AsyncMock
 
+        # Echoes back whatever it is handed, so the assertion below shows the
+        # reranker received the *windowed* text rather than the full chunk.
+        rerank = AsyncMock(side_effect=lambda _query, docs: docs)
         with (
             patch("shared.retrieval.rewrite_queries", new=AsyncMock(return_value=["q"])),
-            patch("shared.retrieval.query_chroma_multi", return_value=docs),
-            patch("shared.retrieval.rerank_chunks", new=AsyncMock(return_value=docs)),
+            patch("shared.retrieval.query_chroma_multi", return_value=candidates),
+            patch("shared.retrieval.rerank_chunks", new=rerank),
             patch("shared.retrieval.RERANK_ENABLED", True),
             patch("shared.retrieval.WINDOW_ENABLED", True),
             patch("shared.retrieval.shrink_docs", return_value=shrunk) as mock_shrink,
@@ -191,7 +195,8 @@ class TestRetrievalWiring:
         ):
             result, _ = await retrieve_context("hello", "", "viewer")
         assert result == shrunk
-        mock_shrink.assert_called_once_with("hello", docs)
+        mock_shrink.assert_called_once_with("hello", candidates)
+        rerank.assert_awaited_once_with("hello", shrunk)
         # The retrieval log records the injected excerpt, not the full chunk.
         mock_log.assert_called_once_with(query="hello", chunks=["chunk"])
 
