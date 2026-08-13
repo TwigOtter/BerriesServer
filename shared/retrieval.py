@@ -8,7 +8,7 @@ Pipeline (retrieve_context):
   1. rewrite_queries — assist-model rewrite of the message into 2-3 search queries
   2. query_chroma_multi — multi-query vector search (run off the event loop)
   3. shrink_docs (shared/windowing.py) — cuts every candidate down to its
-     most query-relevant ~150-token window so the injected block fits the
+     most query-relevant window (~1.5x WINDOW_TOKEN_LIMIT) so the block fits the
      system-prompt token budget
   4. rerank_chunks — assist-model relevance scoring over the windowed
      candidates; keeps the best CHROMA_N_RESULTS above RERANK_MIN_SCORE and

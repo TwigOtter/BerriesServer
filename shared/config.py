@@ -35,7 +35,11 @@ INGEST_SECRET = os.getenv("INGEST_SECRET", "")       # shared secret header from
 # ── Chunking / buffer ──────────────────────────────────────────────────────
 CHUNK_TOKEN_LIMIT = int(os.getenv("CHUNK_TOKEN_LIMIT", "480"))   # flush at ~480 tokens
 CHUNK_TIMEOUT_SEC = int(os.getenv("CHUNK_TIMEOUT_SEC", "300"))   # flush after 5 min idle
-CHUNK_OVERLAP_SEC = int(os.getenv("CHUNK_OVERLAP_SEC", "30"))    # keep last 30s on flush
+# Overlap carried into the next chunk after a flush. Token-based, never
+# time-based: chat is bursty, and an age cutoff drops the setup for a reply
+# that lands minutes later (common in slow Discord watch channels). Must stay
+# well under CHUNK_TOKEN_LIMIT or the carried tokens alone re-trip the flush.
+CHUNK_OVERLAP_TOKENS = int(os.getenv("CHUNK_OVERLAP_TOKENS", "120"))
 
 # ── ChromaDB ───────────────────────────────────────────────────────────────
 CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "stream_transcripts")
@@ -70,14 +74,15 @@ RERANK_MIN_SCORE = float(os.getenv("RERANK_MIN_SCORE", "5"))     # 0-10; below t
 # query-relevant slice: sliding windows of whole chat lines
 # (~WINDOW_TOKEN_LIMIT tokens each, ~50% overlap) are embedded and scored by
 # L2 distance against the raw message; the best window merged with its
-# better-scoring neighbour (~150 tokens) is what the reranker judges and what
-# gets injected. Keeps the chroma block near ~600 tokens instead of ~1600 so
-# the full system prompt fits the 4096-token budget. See shared/windowing.py.
+# better-scoring neighbour (~1.5x the limit) is what the reranker judges and
+# what gets injected — so CHROMA_N_RESULTS chunks cost roughly
+# N * 1.5 * WINDOW_TOKEN_LIMIT instead of N * 480, keeping the full system
+# prompt inside the 4096-token budget. See shared/windowing.py.
 # Note: with RERANK_ENABLED=true this also keeps the rerank prompt itself
 # inside that budget — turning windowing off puts RERANK_CANDIDATES full
 # chunks in one prompt, which overflows 4096 and 400s.
 WINDOW_ENABLED = os.getenv("WINDOW_ENABLED", "true").lower() in ("1", "true", "yes")
-WINDOW_TOKEN_LIMIT = int(os.getenv("WINDOW_TOKEN_LIMIT", "100"))  # per-window budget; stride is half this
+WINDOW_TOKEN_LIMIT = int(os.getenv("WINDOW_TOKEN_LIMIT", "200"))  # per-window budget; stride is half this
 # Address of the chroma-server.service (see deploy/chroma-server.service).
 CHROMA_HOST = os.getenv("CHROMA_HOST", "127.0.0.1")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8001"))
@@ -111,6 +116,11 @@ VLLM_ASSIST_MODEL = os.getenv("VLLM_ASSIST_MODEL", "")  # served model name; mus
 # settings; REPETITION_PENALTY (>1.0) is the lever that suppresses verbatim
 # copying of in-context blocks -- in vLLM it penalizes prompt tokens too, unlike
 # presence/frequency penalties which only see generated tokens. See docs.
+# Hard context ceiling of the served model — prompt + completion must fit.
+# Raising this past what vLLM was launched with does not buy room; it just
+# moves where the 400 happens. Callers that assemble variable-size prompts
+# (scripts/dream.py) budget against it explicitly.
+VLLM_CONTEXT_TOKENS = int(os.getenv("VLLM_CONTEXT_TOKENS", "4096"))
 VLLM_TEMPERATURE = float(os.getenv("VLLM_TEMPERATURE", "0.7"))
 VLLM_TOP_P = float(os.getenv("VLLM_TOP_P", "0.8"))
 VLLM_TOP_K = int(os.getenv("VLLM_TOP_K", "20"))                       # -1 disables
@@ -186,6 +196,29 @@ TWITCH_RESPONSE_TOKENS = int(os.getenv("TWITCH_RESPONSE_TOKENS", "80"))
 TWITCH_HISTORY_TOKEN_LIMIT = int(os.getenv("TWITCH_HISTORY_TOKEN_LIMIT", "960"))  # ~= old recent_chunks ceiling (2 * CHUNK_TOKEN_LIMIT)
 TWITCH_HISTORY_ROW_LIMIT = int(os.getenv("TWITCH_HISTORY_ROW_LIMIT", "200"))      # SQL-side pre-filter before the token trim
 DISCORD_HISTORY_TOKEN_LIMIT = int(os.getenv("DISCORD_HISTORY_TOKEN_LIMIT", "1028"))  # token-accurate replacement for the old char/4 estimate
+
+# ── Prompt budget (shared/budget.py) ──────────────────────────────────────
+# The per-source limits above (history, windowing, lore top-n) each cap one
+# input, but nothing capped their SUM -- a long conversation plus fat
+# retrieval chunks walked past the model's context ceiling and vLLM answered
+# 400, dropping the response entirely. fit_to_budget() is the backstop: it
+# costs the assembled prompt and sheds retrieval chunks, then history turns,
+# until it fits.
+#
+# The cost estimate is deliberately conservative. Token counts come from
+# tiktoken/cl100k_base (shared/tokenizer.py) but the served model is Qwen,
+# and the chat template adds per-message framing that never appears in the
+# content -- across 160 logged chat_response calls vLLM's reported
+# prompt_tokens ran 101-284 tokens (mean 146, max ratio 1.078) above the raw
+# content count. PROMPT_BUDGET_OVERHEAD_RATIO and _PER_MESSAGE below reproduce
+# that gap; on those same 160 calls the pair never underestimates. A flat
+# additive margin does (14/160), which is why this is a ratio and not a
+# constant. Re-derive with scripts/check_prompt_budget.py if the model,
+# chat template, or tokenizer changes.
+PROMPT_BUDGET_ENABLED = os.getenv("PROMPT_BUDGET_ENABLED", "true").lower() == "true"
+PROMPT_BUDGET_OVERHEAD_RATIO = float(os.getenv("PROMPT_BUDGET_OVERHEAD_RATIO", "1.08"))
+PROMPT_BUDGET_PER_MESSAGE = int(os.getenv("PROMPT_BUDGET_PER_MESSAGE", "8"))   # chat-template framing per dispatched message
+PROMPT_BUDGET_MARGIN = int(os.getenv("PROMPT_BUDGET_MARGIN", "64"))            # final safety gap under the ceiling
 
 # ── Databases ──────────────────────────────────────────────────────────────
 USERS_DB_PATH = DATA_DIR / "users.db"

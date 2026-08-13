@@ -59,8 +59,8 @@ def main(pending_path: Path) -> int:
         return 0
 
     log.info("Upserting %d summaries to ChromaDB", len(pending))
+    ids = [item["id"] for item in pending]
     try:
-        ids = [item["id"] for item in pending]
         docs = [item["document"] for item in pending]
         metas = [item["metadata"] for item in pending]
         get_collection().upsert(ids=ids, documents=docs, metadatas=metas)
@@ -69,6 +69,36 @@ def main(pending_path: Path) -> int:
         return 2
 
     log.info("Upsert succeeded: %d summaries written", len(pending))
+
+    # Delete the chunks that were folded into those summaries — strictly after
+    # the upsert, so a failure anywhere above leaves the originals intact. The
+    # worst case here is a summary that co-exists with its sources (redundant
+    # but lossless); deleting first would risk losing both.
+    #
+    # Summary IDs are excluded defensively: dream.py already filters a summary
+    # out of its own source list, but a stale pending file from before that
+    # guard existed must not be able to delete a summary this run just wrote.
+    written = set(ids)
+    source_ids = sorted({
+        cid
+        for item in pending
+        for cid in item.get("source_ids", [])
+        if cid not in written
+    })
+    if not source_ids:
+        log.info("No source chunks to delete")
+        return 0
+
+    try:
+        get_collection().delete(ids=source_ids)
+    except Exception:
+        # Non-fatal: the summaries are already written, so returning 0 lets
+        # dream.py drop the pending file. Re-running would otherwise re-spend
+        # LLM tokens to re-derive summaries that already exist.
+        log.exception("Deleting %d consolidated source chunk(s) failed", len(source_ids))
+        return 0
+
+    log.info("Deleted %d consolidated source chunk(s)", len(source_ids))
     return 0
 
 

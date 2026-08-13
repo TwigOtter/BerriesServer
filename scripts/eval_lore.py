@@ -160,11 +160,12 @@ async def run_fabrication() -> None:
         req = BerriesRequest(query=question, display_name="a viewer")
         system_context, developer_blocks = await build_context(providers, req)
         system_prompt = build_system_prompt(personality, ContextType.DISCORD_MENTION, system_context)
+        messages = [{"role": "developer", "content": b.text} for b in developer_blocks]
+        messages.append({"role": "user", "content": f"A viewer said: {question}"})
         response = await get_completion(
             system_prompt=system_prompt,
-            user_message=f"A viewer said: {question}",
+            messages=messages,
             max_tokens=600,
-            developer_blocks=developer_blocks,
             purpose="eval_fabrication",
         )
         response = cleanup_response(response) if response else "(no response)"

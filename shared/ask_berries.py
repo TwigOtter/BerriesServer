@@ -20,6 +20,7 @@ import logging
 import re
 
 from shared import trace
+from shared.budget import fit_to_budget
 from shared.config import (
     AGENT_TOOLS_ENABLED,
     DISCORD_HISTORY_TOKEN_LIMIT,
@@ -31,6 +32,7 @@ from shared.config import (
 from shared.context_providers import (
     BerriesRequest,
     ChromaContextProvider,
+    ContextBlock,
     LoreProvider,
     UserProfileProvider,
     build_context,
@@ -69,7 +71,7 @@ _PROFILE_PROVIDER = UserProfileProvider()
 
 
 def _assemble_messages(
-    lead_blocks: list[str],
+    lead_blocks: list[ContextBlock],
     history_turns: list[dict],
     profile_block: str | None,
     final_query: str,
@@ -78,12 +80,46 @@ def _assemble_messages(
     [developer(lead context: lore retrieval, ...), *history turns,
     developer(user profile — right before the query it's about), user(final query)]
     """
-    messages = [{"role": "developer", "content": b} for b in lead_blocks]
+    messages = [{"role": "developer", "content": b.text} for b in lead_blocks]
     messages += history_turns
     if profile_block:
         messages.append({"role": "developer", "content": profile_block})
     messages.append({"role": "user", "content": final_query})
     return messages
+
+
+def _fit(
+    system_prompt: str,
+    lead_blocks: list[ContextBlock],
+    history_turns: list[dict],
+    profile_block: str | None,
+    final_query: str,
+    max_tokens: int,
+) -> tuple[list[dict], list[ContextBlock], list[dict]]:
+    """
+    Trim context to the backend's context ceiling.
+
+    Returns (messages, lead_blocks, history_turns) — the assembled message list
+    plus the trimmed pieces it was built from, since the agent path composes
+    those pieces differently and must not fall back to the untrimmed ones.
+
+    The per-source token limits (history, windowing, lore) each cap one input;
+    this caps their sum, which is what actually has to fit. Overruns used to
+    reach the backend and come back as a 400 with no response at all — see
+    shared/budget.py.
+    """
+    with trace.step("prompt_budget"):
+        lead_blocks, history_turns = fit_to_budget(
+            system_prompt=system_prompt,
+            lead_blocks=lead_blocks,
+            history_turns=history_turns,
+            profile_block=profile_block,
+            final_query=final_query,
+            max_tokens=max_tokens,
+            assemble=_assemble_messages,
+        )
+    messages = _assemble_messages(lead_blocks, history_turns, profile_block, final_query)
+    return messages, lead_blocks, history_turns
 
 
 # ── Internal helpers ─────────────────────────────────────────────────────────
@@ -213,9 +249,11 @@ async def ask_berries_twitch(
         with trace.step("context_user_profile") as s:
             profile_block = await _PROFILE_PROVIDER.provide(req)
             s["chars"] = len(profile_block) if profile_block else 0
-        messages = _assemble_messages(lead_blocks, history_turns, profile_block, final_query)
-
         system_prompt = build_system_prompt(_load_personality(), context_type, system_context)
+        messages, _lead_blocks, _history_turns = _fit(
+            system_prompt, lead_blocks, history_turns, profile_block, final_query,
+            max_tokens=TWITCH_RESPONSE_TOKENS,
+        )
         trace.add(system_prompt=system_prompt, messages=messages)
         with trace.step("llm_response"):
             response = await ask_berries(
@@ -277,9 +315,11 @@ async def ask_berries_discord_mention(
         with trace.step("context_user_profile") as s:
             profile_block = await _PROFILE_PROVIDER.provide(req)
             s["chars"] = len(profile_block) if profile_block else 0
-        messages = _assemble_messages(lead_blocks, history_turns, profile_block, final_query)
-
         system_prompt = build_system_prompt(_load_personality(), ContextType.DISCORD_MENTION, system_context)
+        messages, lead_blocks, history_turns = _fit(
+            system_prompt, lead_blocks, history_turns, profile_block, final_query,
+            max_tokens=DISCORD_RESPONSE_TOKENS,
+        )
         trace.add(system_prompt=system_prompt, messages=messages)
 
         log.debug("ask_berries_discord_mention — final_query: %.120r", final_query)
@@ -291,7 +331,7 @@ async def ask_berries_discord_mention(
             # into one more developer block, preserving today's behavior for
             # this off-by-default path. See docs/agent-tools.md.
             from shared.agent import run_tool_loop
-            agent_dev_blocks = list(lead_blocks)
+            agent_dev_blocks = [b.text for b in lead_blocks]
             if profile_block:
                 agent_dev_blocks.append(profile_block)
             if history_turns:

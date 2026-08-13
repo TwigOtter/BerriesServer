@@ -141,6 +141,44 @@ def upsert_summary(chunk_id: str, text: str, metadata: dict) -> None:
     collection.upsert(ids=[chunk_id], documents=[text], metadatas=[metadata])
 
 
+def query_with_ids(query: str, n_results: int = CHROMA_N_RESULTS) -> list[tuple[str, str, dict]]:
+    """
+    Single-query lookup that keeps chunk IDs: [(chunk_id, document, metadata)].
+
+    query_chroma_multi drops IDs because response pipelines only inject text.
+    The nightly dream (scripts/dream.py) needs them — it deletes the chunks it
+    has folded into a summary, so it has to know exactly what it consolidated.
+
+    CHROMA_L2_THRESHOLD applies here for the same reason it applies to real
+    retrieval, but the stakes are higher: an unfiltered top-n would hand the
+    summarizer three arbitrary chunks for a low-signal query like "hi" and then
+    delete them. Only chunks a real lookup would surface are eligible.
+    """
+    if not query:
+        return []
+    results = get_collection().query(
+        query_texts=[query],
+        n_results=n_results,
+        include=["documents", "metadatas", "distances"],
+    )
+    out: list[tuple[str, str, dict]] = []
+    for chunk_id, doc, meta, dist in zip(
+        results.get("ids", [[]])[0],
+        results.get("documents", [[]])[0],
+        results.get("metadatas", [[]])[0],
+        results.get("distances", [[]])[0],
+    ):
+        if dist <= CHROMA_L2_THRESHOLD:
+            out.append((chunk_id, doc, meta or {}))
+    return out
+
+
+def delete_chunks(chunk_ids: list[str]) -> None:
+    """Delete chunks by ID from the shared transcript collection."""
+    if chunk_ids:
+        get_collection().delete(ids=chunk_ids)
+
+
 def query_chroma_multi(queries: list[str], n_results: int = CHROMA_N_RESULTS) -> list[tuple[str, dict]]:
     """
     Run all queries against the shared transcript collection in one call,

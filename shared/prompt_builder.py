@@ -104,7 +104,13 @@ def format_chroma_context(docs: list[tuple[str, dict]]) -> str:
 def format_user_context(user: dict, fallback_name: str) -> str:
     """
     Format a user profile row into a USER PROFILE block for the system prompt.
-    Only includes fields that are actually set; returns empty string if nothing useful.
+    Only includes fields that are actually set, with one exception: pronouns.
+
+    Pronouns are always stated, defaulting to they/them when the user has not
+    told us. Omitting the line leaves the model free to infer from a username
+    or fursona, which it does — and gets wrong. Only ~19 of ~736 rows have the
+    field set, so the default is the common path, and a stated they/them is
+    both safer and cheaper than a guess.
     """
     lines: list[str] = []
 
@@ -114,8 +120,7 @@ def format_user_context(user: dict, fallback_name: str) -> str:
     if user.get("species"):
         lines.append(f"Species: {user['species']}")
 
-    if user.get("pronouns"):
-        lines.append(f"Pronouns: {user['pronouns']}")
+    lines.append(f"Pronouns: {user.get('pronouns') or 'they/them'}")
 
     tz = user.get("timezone")
     if tz:
@@ -130,9 +135,10 @@ def format_user_context(user: dict, fallback_name: str) -> str:
     if user.get("about"):
         lines.append(f"About: {user['about']}")
 
-    # Only emit the block if we have more than just the name
-    if len(lines) <= 1:
-        return ""
+    # Always non-empty now that pronouns are unconditional: a row with nothing
+    # but a name still yields Name + Pronouns, and that pronoun line is the
+    # whole point — it is exactly the bare-row case where the model would
+    # otherwise infer. Callers still treat "" as "no profile" for a missing row.
     return "USER PROFILE:\n" + "\n".join(lines)
 
 

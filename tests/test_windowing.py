@@ -24,22 +24,41 @@ def _line(name: str, words: int) -> str:
     return f"[{name}]: " + " ".join(["word"] * words)
 
 
+# shrink_docs injects any doc at or under 2 * limit whole, so a fixture that is
+# supposed to be windowed has to clear that bar with room to spare. Sizing it
+# off _LIMIT keeps retuning WINDOW_TOKEN_LIMIT from quietly turning these into
+# pass-through tests that assert nothing (which is what a 100 -> 200 bump did).
+_LIMIT = 200
+
+
+def _big_doc(marker_at: int | None = None, marker: str = "") -> str:
+    lines = [_line(f"User{i}", 25) for i in range(30)]
+    if marker_at is not None:
+        lines[marker_at] = marker
+    return "\n".join(lines)
+
+
+def test_big_fixture_actually_gets_windowed():
+    """Guard: if this fails, the TestShrinkDocs fixtures stopped being windowed."""
+    assert count_tokens(_big_doc()) > 2 * _LIMIT
+
+
 class TestSplitSegments:
     def test_short_lines_pass_through_whole(self):
         text = "\n".join([_line("Twig", 5), _line("Viewer", 8)])
-        assert _split_segments(text, limit=100) == text.split("\n")
+        assert _split_segments(text, limit=_LIMIT) == text.split("\n")
 
     def test_blank_lines_dropped(self):
         text = f"{_line('Twig', 5)}\n\n{_line('Viewer', 5)}"
-        assert len(_split_segments(text, limit=100)) == 2
+        assert len(_split_segments(text, limit=_LIMIT)) == 2
 
     def test_oversized_line_split_with_elision_both_ways(self):
         long = _line("Rambler", 300)
-        segments = _split_segments(long, limit=100)
+        segments = _split_segments(long, limit=_LIMIT)
         assert len(segments) > 1
         # Every fragment keeps the speaker prefix and fits the budget.
         assert all(s.startswith("[Rambler]: ") for s in segments)
-        assert all(count_tokens(s) <= 100 for s in segments)
+        assert all(count_tokens(s) <= 200 for s in segments)
         # First: trailing marker only; middle: both; last: leading only.
         assert segments[0].endswith("...") and "]: ..." not in segments[0]
         assert segments[-1].startswith("[Rambler]: ...")
@@ -49,7 +68,7 @@ class TestSplitSegments:
 
     def test_oversized_line_without_prefix_still_marked(self):
         prose = " ".join(["word"] * 300)
-        segments = _split_segments(prose, limit=100)
+        segments = _split_segments(prose, limit=_LIMIT)
         assert len(segments) > 1
         assert segments[0].endswith("...")
         assert segments[-1].startswith("...")
@@ -57,11 +76,11 @@ class TestSplitSegments:
 
 class TestBuildWindows:
     def test_single_window_when_everything_fits(self):
-        assert _build_windows([10, 10, 10], limit=100, stride=50) == [(0, 3)]
+        assert _build_windows([10, 10, 10], limit=_LIMIT, stride=50) == [(0, 3)]
 
     def test_windows_cover_all_segments_and_overlap(self):
         counts = [30] * 10  # 300 tokens total
-        windows = _build_windows(counts, limit=100, stride=50)
+        windows = _build_windows(counts, limit=_LIMIT, stride=50)
         assert windows[0][0] == 0
         assert windows[-1][1] == len(counts)
         for (s1, e1), (s2, e2) in zip(windows, windows[1:]):
@@ -69,11 +88,11 @@ class TestBuildWindows:
 
     def test_windows_respect_token_limit(self):
         counts = [40, 40, 40, 40]
-        for s, e in _build_windows(counts, limit=100, stride=50):
-            assert sum(counts[s:e]) <= 100
+        for s, e in _build_windows(counts, limit=_LIMIT, stride=50):
+            assert sum(counts[s:e]) <= 200
 
     def test_single_oversized_segment_gets_own_window(self):
-        assert _build_windows([250], limit=100, stride=50) == [(0, 1)]
+        assert _build_windows([250], limit=_LIMIT, stride=50) == [(0, 1)]
 
 
 class TestPickRange:
@@ -101,16 +120,16 @@ class TestShrinkDocs:
             patch("shared.windowing.embed_query") as eq,
             patch("shared.windowing.embed_documents") as ed,
         ):
-            out = shrink_docs("query", docs, limit=100)
+            out = shrink_docs("query", docs, limit=_LIMIT)
         assert out == docs
         eq.assert_not_called()
         ed.assert_not_called()
 
     def test_shrinks_to_best_window_plus_neighbour(self):
-        # 12 lines x ~30 tokens = ~360 tokens; the marker line should win.
-        lines = [_line(f"User{i}", 25) for i in range(12)]
-        lines[6] = "[Twig]: the secret mushroom fact " + " ".join(["word"] * 20)
-        doc_text = "\n".join(lines)
+        doc_text = _big_doc(
+            marker_at=15,
+            marker="[Twig]: the secret mushroom fact " + " ".join(["word"] * 20),
+        )
 
         def fake_embed_documents(texts):
             # Windows containing the marker embed at the query point.
@@ -123,7 +142,7 @@ class TestShrinkDocs:
             patch("shared.windowing.embed_query", return_value=np.zeros(4)),
             patch("shared.windowing.embed_documents", side_effect=fake_embed_documents),
         ):
-            out = shrink_docs("query", [(doc_text, {"source": "twitch"})], limit=100)
+            out = shrink_docs("query", [(doc_text, {"source": "twitch"})], limit=_LIMIT)
 
         (text, meta), = out
         assert meta == {"source": "twitch"}
@@ -133,7 +152,7 @@ class TestShrinkDocs:
         assert text in doc_text
 
     def test_metadata_and_order_preserved_across_mixed_docs(self):
-        big = "\n".join(_line(f"User{i}", 25) for i in range(12))
+        big = _big_doc()
         small = _line("Twig", 10)
         docs = [(big, {"i": 0}), (small, {"i": 1}), (big, {"i": 2})]
         with (
@@ -143,23 +162,23 @@ class TestShrinkDocs:
                 side_effect=lambda texts: [np.ones(4) for _ in texts],
             ),
         ):
-            out = shrink_docs("query", docs, limit=100)
+            out = shrink_docs("query", docs, limit=_LIMIT)
         assert [meta["i"] for _, meta in out] == [0, 1, 2]
         assert out[1] == (small, {"i": 1})
         assert count_tokens(out[0][0]) < count_tokens(big)
 
     def test_fails_open_when_embedding_breaks(self):
-        big = "\n".join(_line(f"User{i}", 25) for i in range(12))
+        big = _big_doc()
         docs = [(big, {"source": "twitch"})]
         with patch(
             "shared.windowing.embed_query",
             side_effect=RuntimeError("embed service down"),
         ):
-            out = shrink_docs("query", docs, limit=100)
+            out = shrink_docs("query", docs, limit=_LIMIT)
         assert out == docs
 
     def test_batches_all_windows_in_one_embed_call(self):
-        big = "\n".join(_line(f"User{i}", 25) for i in range(12))
+        big = _big_doc()
         docs = [(big, {"i": 0}), (big, {"i": 1})]
         with (
             patch("shared.windowing.embed_query", return_value=np.zeros(4)),
@@ -168,7 +187,7 @@ class TestShrinkDocs:
                 side_effect=lambda texts: [np.ones(4) for _ in texts],
             ) as ed,
         ):
-            shrink_docs("query", docs, limit=100)
+            shrink_docs("query", docs, limit=_LIMIT)
         assert ed.call_count == 1
 
 

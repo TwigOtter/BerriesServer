@@ -64,7 +64,7 @@ All endpoints require `X-Secret: <INGEST_SECRET>` header.
 - Token count ≥ `CHUNK_TOKEN_LIMIT` (default 480)
 - `CHUNK_TIMEOUT_SEC` inactivity (default 5 min)
 
-After each flush, the last `CHUNK_OVERLAP_SEC` seconds of entries (default 30s) are kept as the seed for the next chunk.
+After each flush, the last `CHUNK_OVERLAP_TOKENS` tokens of entries (default 120) are kept as the seed for the next chunk. The overlap is token-based with no age cutoff — chat is bursty, and a time window drops the message a reply refers to whenever the reply lands minutes later (common in slow Discord watch channels). The buffer is snapshotted and trimmed synchronously, before the embed round-trip, so a request handler that runs during the embed cannot flush the same content twice.
 
 ### `shared/ask_berries.py` — LLM Hub
 
@@ -208,7 +208,7 @@ Copy `.env.example` to `.env`. Key variables:
 | `GIPHY_API_KEY` | — | Giphy API key for announcement GIFs |
 | `CHUNK_TOKEN_LIMIT` | `480` | Flush buffer at this many tokens |
 | `CHUNK_TIMEOUT_SEC` | `300` | Flush buffer after this many seconds of inactivity |
-| `CHUNK_OVERLAP_SEC` | `30` | Seconds of Twitch messages to carry over after a flush |
+| `CHUNK_OVERLAP_TOKENS` | `120` | Tokens of Twitch messages to carry over after a flush (must stay well under `CHUNK_TOKEN_LIMIT`) |
 | `DISCORD_CHUNK_OVERLAP_MESSAGES` | `5` | Discord messages to carry over after a flush |
 | `CHROMA_N_RESULTS` | `4` | ChromaDB results per query |
 | `CHROMA_L2_THRESHOLD` | `0.8` | Discard ChromaDB results with L2 distance above this |

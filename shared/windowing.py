@@ -2,8 +2,9 @@
 shared/windowing.py
 
 Pre-rerank excerpt selection: cut each candidate chunk (~480 tokens) down to
-the ~100-token slice that is actually about the user's message, so three
-chunks cost ~600 prompt tokens instead of ~1600.
+the WINDOW_TOKEN_LIMIT-sized slice that is actually about the user's message,
+so a handful of chunks cost a fraction of the prompt budget they otherwise
+would.
 
 Runs on every vector-search candidate, ahead of rerank_chunks, so the judge
 scores the exact text that will be injected and a full RERANK_CANDIDATES
@@ -22,7 +23,8 @@ How (shrink_docs):
      CHROMA_L2_THRESHOLD / LORE_L2_THRESHOLD filters, deliberately not a
      second oppositely-signed similarity scale.
   4. Per chunk, keep the best window merged with its better-scoring immediate
-     neighbour (line-range union, no extra threshold to tune) — ~150 tokens.
+     neighbour (line-range union, no extra threshold to tune) — roughly 1.5x
+     WINDOW_TOKEN_LIMIT.
 
 Chunks already at or under the merged-window size pass through untouched, and
 any embedding failure fails open to the full chunks — windowing must never be

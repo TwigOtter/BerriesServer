@@ -6,7 +6,7 @@ No mocks needed — build_system_prompt is a pure function.
 """
 
 import pytest
-from shared.prompt_builder import build_system_prompt, ContextType
+from shared.prompt_builder import build_system_prompt, format_user_context, ContextType
 
 PERSONALITY = "You are Berries, a spooky forest demon."
 
@@ -97,3 +97,33 @@ def test_parts_separated_by_double_newline():
     context = "some context"
     result = build_system_prompt(PERSONALITY, ContextType.TWITCH_CHAT, context)
     assert "\n\n" in result
+
+
+# ── USER PROFILE block ───────────────────────────────────────────────────────
+
+def test_pronouns_default_to_they_them_when_unset():
+    """
+    Omitting the line let the model infer pronouns from usernames and fursonas,
+    and it got them wrong. ~94% of rows have no pronouns set, so this is the
+    common path, not an edge case.
+    """
+    block = format_user_context({"t_login": "someone"}, "someone")
+    assert "Pronouns: they/them" in block
+
+
+def test_stored_pronouns_win_over_the_default():
+    block = format_user_context({"t_login": "teeka", "pronouns": "he/him"}, "teeka")
+    assert "Pronouns: he/him" in block
+    assert "they/them" not in block
+
+
+def test_bare_row_still_emits_a_block():
+    """A name-only row is exactly the case the pronoun line exists to cover."""
+    block = format_user_context({"t_login": "someone"}, "someone")
+    assert block.startswith("USER PROFILE:")
+    assert "Name: someone" in block
+
+
+def test_nickname_preferred_over_fallback_name():
+    block = format_user_context({"nickname": "Bean"}, "missoula_mac")
+    assert "Name: Bean" in block

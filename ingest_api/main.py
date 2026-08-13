@@ -35,7 +35,7 @@ from shared.logging_setup import setup_logging
 logger = setup_logging("ingest_api")
 
 from shared.config import (
-    CHUNK_OVERLAP_SEC,
+    CHUNK_OVERLAP_TOKENS,
     CHUNK_TIMEOUT_SEC,
     CHUNK_TOKEN_LIMIT,
     DISCORD_BOT_WEBHOOK_URL,
@@ -70,8 +70,22 @@ async def lifespan(_app):
 
 app = FastAPI(title="Berries Ingest API", lifespan=lifespan)
 
+# Carried-over tokens must leave room for real new content, otherwise the
+# overlap alone keeps the buffer at the flush threshold and every subsequent
+# message emits its own near-duplicate chunk.
+_OVERLAP_TOKENS = CHUNK_OVERLAP_TOKENS
+if _OVERLAP_TOKENS >= CHUNK_TOKEN_LIMIT // 2:
+    _OVERLAP_TOKENS = CHUNK_TOKEN_LIMIT // 4
+    logger.warning(
+        "CHUNK_OVERLAP_TOKENS=%d is too close to CHUNK_TOKEN_LIMIT=%d; clamping to %d",
+        CHUNK_OVERLAP_TOKENS, CHUNK_TOKEN_LIMIT, _OVERLAP_TOKENS,
+    )
+
 # ── In-memory state ────────────────────────────────────────────────────────
 # Each entry: {"source": str, "text": str, "timestamp": float}
+# Entries carried over from a previous flush also have "carried": True — they
+# have already been persisted, so they can seed the next chunk but must never
+# be enough on their own to trigger a flush.
 _buffer: list[dict] = []
 _last_event_time: float = time.time()
 
@@ -153,14 +167,48 @@ def _buffer_token_count() -> int:
     return count_tokens(_buffer_text())
 
 
-async def _flush_buffer(reason: str) -> None:
+def _has_new_entries() -> bool:
+    """True if the buffer holds anything not already written by a prior flush."""
+    return any(not e.get("carried") for e in _buffer)
+
+
+def _trim_to_overlap() -> None:
     """
-    Flush the current buffer to .jsonl and ChromaDB.
-    Keeps the last CHUNK_OVERLAP_SEC seconds of entries as the next buffer seed.
+    Reduce the buffer to its trailing ~_OVERLAP_TOKENS tokens, marking what
+    survives as carried.
+
+    Token-based with no age cutoff on purpose: chat is bursty, and a time
+    window drops the message a reply refers to whenever the reply lands
+    minutes later. Keeps whole entries only, and keeps none at all if even the
+    last entry exceeds the budget — never force-keep one oversized entry, or
+    the buffer can restart already above CHUNK_TOKEN_LIMIT.
     """
     global _buffer
+    kept: list[dict] = []
+    tokens = 0
+    for entry in reversed(_buffer):
+        tokens += count_tokens(entry["text"])
+        if tokens > _OVERLAP_TOKENS:
+            break
+        kept.append(entry)
+    _buffer = [{**e, "carried": True} for e in reversed(kept)]
 
-    if not _buffer:
+
+async def _flush_buffer(reason: str) -> None:
+    """
+    Flush the current buffer to .jsonl and ChromaDB, keeping a token-bounded
+    tail as the next chunk's seed.
+
+    The buffer is snapshotted and trimmed in one synchronous stretch, before
+    any await. That ordering is load-bearing: the embed round-trip below
+    yields the event loop for seconds, and a handler that ran while the
+    un-trimmed buffer was still in place would flush the same content again
+    (plus whatever it just appended), which is where the near-duplicate chunks
+    of 2026-07-26 came from.
+    """
+    # Carried-only buffers have already been persisted — re-flushing them
+    # would re-emit the same text every time the idle timer fires.
+    if not _has_new_entries():
         return
 
     now = datetime.now(timezone.utc)
@@ -174,6 +222,10 @@ async def _flush_buffer(reason: str) -> None:
     text = _buffer_text()
     token_count = count_tokens(text)
     sources = list(dict.fromkeys(e["source"] for e in _buffer))  # ordered unique
+
+    # Snapshot is complete — hand the buffer over to the next chunk now, while
+    # still synchronous. Nothing below reads _buffer again.
+    _trim_to_overlap()
 
     chunk = {
         "chunk_id": chunk_id,
@@ -215,10 +267,6 @@ async def _flush_buffer(reason: str) -> None:
 
     await asyncio.to_thread(_chroma_add)
 
-    # 3. Keep overlap: drop entries older than CHUNK_OVERLAP_SEC
-    cutoff = time.time() - CHUNK_OVERLAP_SEC
-    _buffer = [e for e in _buffer if e["timestamp"] >= cutoff]
-
 
 # ── Background flush timer ─────────────────────────────────────────────────
 
@@ -226,7 +274,7 @@ async def _flush_timer_loop() -> None:
     """Background task: flush buffer on inactivity timeout."""
     while True:
         await asyncio.sleep(10)  # check every 10 seconds
-        if _buffer and (time.time() - _last_event_time) >= CHUNK_TIMEOUT_SEC:
+        if _has_new_entries() and (time.time() - _last_event_time) >= CHUNK_TIMEOUT_SEC:
             await _flush_buffer(reason="timeout")
 
 

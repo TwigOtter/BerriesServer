@@ -13,7 +13,8 @@ touching the pipelines themselves.
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from shared import trace
@@ -40,10 +41,43 @@ class BerriesRequest:
     lore_context: str = ""          # recent conversation for the lore query, with Berries' own messages excluded
 
 
+@dataclass
+class ContextBlock:
+    """
+    One provider's rendered context, optionally re-renderable at a smaller size.
+
+    A provider that can give up material gracefully supplies `parts` (its
+    droppable units, ordered most-valuable-first) and `render` (rebuilds the
+    block text from any prefix of them). shared/budget.py uses that to shed the
+    weakest chunks when the assembled prompt overruns the context ceiling.
+
+    Providers with nothing to give up return a plain string and are normalised
+    into a bare ContextBlock: the budget can still drop the block whole, it
+    just cannot shrink it. That is why `parts` is not simply the block text
+    split on its separator -- chunk text is arbitrary transcript content and
+    may contain the separator itself, so the structure is carried through
+    rather than recovered by string surgery.
+    """
+
+    text: str
+    parts: list = field(default_factory=list)
+    render: Callable[[list], str] | None = None
+
+    @property
+    def shrinkable(self) -> bool:
+        return self.render is not None and bool(self.parts)
+
+    def resized(self, parts: list) -> "ContextBlock":
+        """A copy holding only `parts`, with `text` re-rendered to match."""
+        if self.render is None:
+            raise ValueError("ContextBlock is not shrinkable")
+        return ContextBlock(text=self.render(parts), parts=list(parts), render=self.render)
+
+
 class ContextProvider(Protocol):
     name: str
     role: str = "developer"  # "system" merges into the system prompt; "developer" becomes its own message
-    async def provide(self, req: BerriesRequest) -> str | None: ...
+    async def provide(self, req: BerriesRequest) -> "str | ContextBlock | None": ...
 
 
 class LoreProvider:
@@ -94,13 +128,21 @@ class ChromaContextProvider:
 
     name = "chroma"
 
-    async def provide(self, req: BerriesRequest) -> str | None:
+    async def provide(self, req: BerriesRequest) -> ContextBlock | None:
         docs, _queries = await retrieve_context(
             req.query,
             recent_context=req.recent_context,
             username=req.display_name or "a viewer",
         )
-        return format_chroma_context(docs) if docs else None
+        if not docs:
+            return None
+        # Shrinkable: docs arrive rerank-ordered (most relevant first), so the
+        # budget sheds from the tail when the prompt overruns the ceiling.
+        return ContextBlock(
+            text=format_chroma_context(docs),
+            parts=docs,
+            render=format_chroma_context,
+        )
 
 
 class UserProfileProvider:
@@ -128,27 +170,32 @@ class UserProfileProvider:
 async def build_context(
     providers: list[ContextProvider],
     req: BerriesRequest,
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[ContextBlock]]:
     """
     Run providers in order, split by role.
 
     Returns (system_context, developer_blocks): system_context is the joined
-    output of role="system" providers (currently just LoreProvider — character
+    text of role="system" providers (currently just LoreProvider — character
     facts belong beside the personality); developer_blocks is the ordered list
-    of every other provider's block, one per source, sent as separate
+    of every other provider's ContextBlock, one per source, sent as separate
     "developer"-role messages downstream (see shared/llm_client.py).
+
+    Providers may return a plain string or a ContextBlock; strings are wrapped
+    so callers only ever handle ContextBlocks.
     """
     system_parts: list[str] = []
-    developer_blocks: list[str] = []
+    developer_blocks: list[ContextBlock] = []
     for provider in providers:
         name = getattr(provider, "name", type(provider).__name__)
         with trace.step(f"context_{name}") as s:
             block = await provider.provide(req)
-            s["chars"] = len(block) if block else 0
-        if not block:
+            if isinstance(block, str):
+                block = ContextBlock(text=block)
+            s["chars"] = len(block.text) if block else 0
+        if not block or not block.text:
             continue
         if getattr(provider, "role", "developer") == "system":
-            system_parts.append(block)
+            system_parts.append(block.text)
         else:
             developer_blocks.append(block)
     return "\n\n".join(system_parts), developer_blocks
