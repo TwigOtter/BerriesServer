@@ -105,6 +105,9 @@ from shared.config import (
     LOCAL_TZ,
     LOGS_DIR,
     PERSONALITY_FILE,
+    PROMPT_BUDGET_MARGIN,
+    PROMPT_BUDGET_OVERHEAD_RATIO,
+    PROMPT_BUDGET_PER_MESSAGE,
     VLLM_CONTEXT_TOKENS,
 )
 from shared.llm_client import get_completion
@@ -411,6 +414,9 @@ async def phase_birthdays(today: datetime) -> int:
 # Prose memories run ~150-250 tokens; 500 leaves room for a multi-occasion
 # recollection without handing the whole context window to the completion.
 _CONSOLIDATION_MAX_TOKENS = 500
+# Passes for the profile/budget fixed point in _fit_prompt(). Three is enough
+# to settle every query measured on 2026-08-12; the fallback covers the rest.
+_FIT_PROMPT_PASSES = 3
 
 
 # "[DisplayName]: " prefix that ingest_api and the Discord watcher write.
@@ -551,12 +557,37 @@ def _passage_budget(system: str, preamble: str) -> int:
     server was launched with) — overflowing it is a 400, not a truncation, so
     the whole night's consolidation would fail silently in the timer. Anthropic
     gets a generous cap that the 3-chunk default never approaches.
+
+    The token count is corrected the same way shared/budget.py corrects the
+    chat pipeline's, because it is wrong in the same direction: count_tokens()
+    is tiktoken, the served model is Qwen with its own vocabulary, and the chat
+    template's role framing is added server-side. Measured over 160 logged
+    calls, vLLM charged 101-284 tokens more than the raw content count. This
+    function used to reserve a flat 128-token margin against a mean undercount
+    of 146 — so a prompt that fitted on paper could be rejected outright, which
+    is what happened to one query on 2026-08-12.
+
+    So budget on the *corrected* count: work out how many tokens the content
+    may occupy after the ratio and the per-message framing are applied, then
+    subtract what the system prompt and preamble already spend. Inverting
+    estimate_prompt_tokens() rather than calling it, because the caller needs a
+    raw-token allowance to measure candidate chunks against.
+
+    Deliberately not gated on PROMPT_BUDGET_ENABLED: that flag governs whether
+    the chat pipeline sheds context, and turning it off there must not let this
+    script build a prompt the server will reject.
     """
     if LLM_BACKEND != "vllm":
         return 100_000
-    overhead = count_tokens(system) + count_tokens(preamble)
-    budget = VLLM_CONTEXT_TOKENS - overhead - _CONSOLIDATION_MAX_TOKENS - 128  # margin
-    return max(budget, 0)
+    # Two dispatched messages (system + user), matching estimate_prompt_tokens'
+    # `len(dispatched) + 1` framing for a single user turn.
+    framed = PROMPT_BUDGET_PER_MESSAGE * 2
+    allowance = (
+        VLLM_CONTEXT_TOKENS - _CONSOLIDATION_MAX_TOKENS - PROMPT_BUDGET_MARGIN - framed
+    )
+    content = int(allowance / PROMPT_BUDGET_OVERHEAD_RATIO)
+    spent = count_tokens(system) + count_tokens(preamble)
+    return max(content - spent, 0)
 
 
 def _fit_passages(
@@ -579,6 +610,50 @@ def _fit_passages(
         used += cost
         kept.append((cid, doc, meta))
     return kept
+
+
+def _fit_prompt(
+    hits: list[tuple[str, str, dict]],
+    preamble: str,
+    speaker_index: dict[str, dict | None],
+) -> tuple[str, list[tuple[str, str, dict]]]:
+    """
+    Settle the system prompt and the chunk set together, and return both.
+
+    The two depend on each other: the profile block is built from the speakers
+    in the chunks, and the chunk budget is whatever the system prompt leaves
+    over. Building profiles from *all* candidates charged the prompt for people
+    who only speak in chunks the budget then dropped — on 2026-08-12 one query
+    carried 1012 tokens of profiles, which cut its budget to 1147 and cost it a
+    third of its source material.
+
+    So iterate to a fixed point: profiles for the chunks currently kept, re-fit
+    against the budget that leaves, repeat. Shedding a chunk can shed its
+    speakers, which frees budget, which can take the chunk back — so the set
+    can oscillate. The loop is capped and the fallback re-fits against the last
+    system prompt, which means the pair handed back always fits: `kept` is
+    always the output of `_fit_passages` under a budget derived from a system
+    prompt whose profiles cover no fewer chunks than `kept` itself.
+
+    The caller records exactly `kept` as the summary's source_ids, so the
+    invariant from `_fit_passages` still holds — a chunk that never reached the
+    prompt is never deleted.
+    """
+    kept = hits
+    system = _consolidation_system_prompt(_speaker_profiles(kept, speaker_index))
+
+    for _ in range(_FIT_PROMPT_PASSES):
+        refit = _fit_passages(hits, _passage_budget(system, preamble))
+        if refit == kept:
+            return system, kept
+        kept = refit
+        system = _consolidation_system_prompt(_speaker_profiles(kept, speaker_index))
+
+    # Out of passes — the set is oscillating. Narrow to what fits under the
+    # current system prompt and rebuild from that; a subset can only shrink the
+    # profile block, so the result still fits.
+    kept = _fit_passages(kept, _passage_budget(system, preamble))
+    return _consolidation_system_prompt(_speaker_profiles(kept, speaker_index)), kept
 
 
 def _chunk_date(chunk_id: str, meta: dict) -> str:
@@ -671,11 +746,6 @@ async def phase_rag_summarization(
         if not hits:
             continue
 
-        # Built per query: the profile block covers whoever speaks in these
-        # particular chunks. Derived from all hits rather than the budget-fitted
-        # subset — an extra profile is harmless, a missing one costs pronouns.
-        system = _consolidation_system_prompt(_speaker_profiles(hits, speaker_index))
-
         preamble = (
             f"These excerpts were all retrieved together when someone said: \"{query}\"\n\n"
             f"Write down what you remember from them, as prose. Each excerpt is labelled with "
@@ -684,8 +754,7 @@ async def phase_rag_summarization(
         )
         # Only chunks that survive the budget go in the prompt, and only those
         # are recorded as sources — Phase 4 deletes exactly what was consolidated.
-        budget = _passage_budget(system, preamble)
-        hits = _fit_passages(hits, budget)
+        system, hits = _fit_prompt(hits, preamble, speaker_index)
         if not hits:
             log.warning("No chunk fits the prompt budget for query %r — skipping", query[:60])
             continue

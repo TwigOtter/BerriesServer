@@ -21,7 +21,7 @@ flattened block), not its source. `recent_buffer_text` (query-rewriting
 context, distinct from conversation history) is untouched, still sourced from
 ingest_api's live `_buffer`. The chunk-assembly buffer/ChromaDB embedding
 pipeline (Phase 3 below) is also untouched — still `_buffer` → JSONL/Chroma
-with `CHUNK_OVERLAP_SEC` overlap.
+with `CHUNK_OVERLAP_TOKENS` overlap.
 Phases 3-5 below remain as specced.
 
 ## Motivation

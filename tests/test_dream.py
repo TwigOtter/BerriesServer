@@ -82,8 +82,35 @@ def test_passage_budget_leaves_room_for_completion():
     with patch.object(dream, "LLM_BACKEND", "vllm"), \
          patch.object(dream, "VLLM_CONTEXT_TOKENS", 4096):
         budget = dream._passage_budget("word " * 1000, "word " * 100)
-        # 4096 - ~1001 - ~101 - 500 completion - 128 margin
-        assert 2300 < budget < 2400
+        # (4096 - 500 completion - 64 margin - 16 framing) / 1.08 overhead
+        # ratio = 3255 tokens of content, less ~1001 system and ~101 preamble.
+        assert 2100 < budget < 2200
+
+
+def test_passage_budget_survives_the_backend_token_count():
+    """
+    The budget must never let a prompt through that vLLM will then reject.
+
+    _passage_budget() inverts shared.budget.estimate_prompt_tokens(); this
+    checks the inversion against the estimator itself, so a change to the
+    overhead ratio, the per-message framing, or the margin on one side cannot
+    silently drift from the other.
+    """
+    from shared import budget as shared_budget
+
+    system, preamble = "word " * 800, "word " * 60
+    with patch.object(dream, "LLM_BACKEND", "vllm"), \
+         patch.object(dream, "VLLM_CONTEXT_TOKENS", 4096):
+        allowance = dream._passage_budget(system, preamble)
+
+    # A prompt that spends the budget exactly, costed the way the dispatcher
+    # will cost it, must still leave room for the completion.
+    passages = "word " * allowance
+    with patch.object(shared_budget, "LLM_BACKEND", "vllm"):
+        estimated = shared_budget.estimate_prompt_tokens(
+            system, [{"role": "user", "content": preamble + passages}]
+        )
+    assert estimated + dream._CONSOLIDATION_MAX_TOKENS <= 4096
 
 
 def test_passage_budget_unbounded_off_vllm():
